@@ -17,14 +17,10 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
 
-func testServer(t *testing.T) (*Server, http.Handler, *storage.Memory, *store.DB) {
+func testServer(t *testing.T) (*Server, http.Handler, *storage.Memory, store.Store) {
 	t.Helper()
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
 	mem := storage.NewMemory()
+	catalog := store.NewObject(mem)
 	cfg := config.Config{
 		AccessToken:    "write-token",
 		ReadToken:      "read-token",
@@ -33,19 +29,20 @@ func testServer(t *testing.T) (*Server, http.Handler, *storage.Memory, *store.DB
 		CacheTTL:       5 * 24 * time.Hour,
 		CleanupOnSave:  true,
 		MaxUploadBytes: 10 << 20,
+		CatalogBackend: "s3",
 	}
-	cleaner := &cleanup.Cleaner{Backend: mem, Store: db, TTL: cfg.CacheTTL, Interval: time.Hour}
+	cleaner := &cleanup.Cleaner{Backend: mem, Store: catalog, TTL: cfg.CacheTTL, Interval: time.Hour}
 	s := &Server{
 		Cfg:     cfg,
 		Backend: mem,
-		Store:   db,
+		Store:   catalog,
 		Cleaner: cleaner,
 		Sessions: &auth.Sessions{
 			Secret:   []byte("session-secret"),
 			Username: "admin",
 		},
 	}
-	return s, s.Handler(), mem, db
+	return s, s.Handler(), mem, catalog
 }
 
 func do(h http.Handler, method, path, token string, body []byte, headers map[string]string) *httptest.ResponseRecorder {

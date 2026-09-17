@@ -77,16 +77,25 @@ func main() {
 		backend = s3
 	}
 
-	db, err := store.Open(cfg.SQLitePath)
-	if err != nil {
-		log.Error("sqlite", "err", err)
-		os.Exit(1)
+	var catalog store.Store
+	switch cfg.CatalogBackend {
+	case "sqlite":
+		db, err := store.Open(cfg.SQLitePath)
+		if err != nil {
+			log.Error("sqlite", "err", err)
+			os.Exit(1)
+		}
+		catalog = db
+		log.Info("catalog backend", "type", "sqlite", "path", cfg.SQLitePath)
+	default:
+		catalog = store.NewObject(backend)
+		log.Info("catalog backend", "type", "s3")
 	}
-	defer db.Close()
+	defer catalog.Close()
 
 	cleaner := &cleanup.Cleaner{
 		Backend:  backend,
-		Store:    db,
+		Store:    catalog,
 		TTL:      cfg.CacheTTL,
 		Interval: cfg.CleanupInterval,
 		Log:      log,
@@ -101,7 +110,7 @@ func main() {
 			if at.IsZero() {
 				at = time.Now()
 			}
-			if err := db.EnsureEntry(ctx, obj.Hash, obj.Size, at); err != nil {
+			if err := catalog.EnsureEntry(ctx, obj.Hash, obj.Size, at); err != nil {
 				log.Warn("reconcile cache entry", "hash", obj.Hash, "err", err)
 			}
 		}
@@ -117,7 +126,7 @@ func main() {
 	srv := &httpserver.Server{
 		Cfg:     cfg,
 		Backend: backend,
-		Store:   db,
+		Store:   catalog,
 		Cleaner: cleaner,
 		Sessions: &auth.Sessions{
 			Secret:   []byte(cfg.SessionSecret),

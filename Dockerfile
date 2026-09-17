@@ -29,6 +29,6 @@ RUN adduser -D -H -u 65532 cache \
  && chown cache:cache /data
 USER cache
 EXPOSE 8080
-ENV PORT=8080 SQLITE_PATH=/data/nx-cache.db
+ENV PORT=8080 CATALOG_BACKEND=s3
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 ENTRYPOINT ["/usr/local/bin/nx-cache"]

@@ -25,7 +25,7 @@ const pageSize = 25
 type Server struct {
 	Cfg      config.Config
 	Backend  storage.Backend
-	Store    *store.DB
+	Store    store.Store
 	Cleaner  *cleanup.Cleaner
 	Sessions *auth.Sessions
 	Log      *slog.Logger

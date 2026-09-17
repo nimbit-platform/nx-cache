@@ -13,6 +13,7 @@ services:
 
   cache:
     build: .
+    image: ghcr.io/nimbit-platform/nx-cache:local
     ports:
       - "8080:8080"
     environment:
@@ -29,15 +30,12 @@ services:
       S3_PREFIX: nx-cache/
       S3_FORCE_PATH_STYLE: "true"
       S3_CREATE_BUCKET: "true"
-      SQLITE_PATH: /data/nx-cache.db
+      CATALOG_BACKEND: s3
       CACHE_TTL: 120h
       CLEANUP_INTERVAL: 1h
       CLEANUP_ON_SAVE: "true"
-    volumes:
-      - cache-db:/data
     depends_on:
       - minio
 
 volumes:
   minio-data:
-  cache-db:

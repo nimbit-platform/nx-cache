@@ -32,6 +32,7 @@ type Config struct {
 	SQLitePath string
 
 	StorageBackend string
+	CatalogBackend string
 
 	CacheTTL        time.Duration
 	CleanupInterval time.Duration
@@ -56,8 +57,9 @@ func Load() (Config, error) {
 		UIUsername:         env("UI_USERNAME", "admin"),
 		UIPassword:         os.Getenv("UI_PASSWORD"),
 		SessionSecret:      os.Getenv("SESSION_SECRET"),
-		SQLitePath:         env("SQLITE_PATH", "data/nx-cache.db"),
+		SQLitePath:         os.Getenv("SQLITE_PATH"),
 		StorageBackend:     strings.ToLower(env("STORAGE_BACKEND", "s3")),
+		CatalogBackend:     strings.ToLower(env("CATALOG_BACKEND", "s3")),
 		CacheTTL:           envDuration("CACHE_TTL", 5*24*time.Hour),
 		CleanupInterval:    envDuration("CLEANUP_INTERVAL", time.Hour),
 		CleanupOnSave:      envBool("CLEANUP_ON_SAVE", true),
@@ -75,6 +77,15 @@ func Load() (Config, error) {
 	}
 	if cfg.StorageBackend == "s3" && cfg.S3Bucket == "" {
 		return Config{}, fmt.Errorf("S3_BUCKET_NAME is required")
+	}
+	if cfg.CatalogBackend == "" {
+		cfg.CatalogBackend = "s3"
+	}
+	if cfg.CatalogBackend != "s3" && cfg.CatalogBackend != "sqlite" {
+		return Config{}, fmt.Errorf("CATALOG_BACKEND must be s3 or sqlite")
+	}
+	if cfg.CatalogBackend == "sqlite" && strings.TrimSpace(cfg.SQLitePath) == "" {
+		cfg.SQLitePath = "data/nx-cache.db"
 	}
 	if cfg.UIPassword == "" {
 		return Config{}, fmt.Errorf("UI_PASSWORD is required")

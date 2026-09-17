@@ -15,11 +15,11 @@ import (
 )
 
 type Entry struct {
-	Hash           string
-	Size           int64
-	CreatedAt      time.Time
-	LastAccessedAt time.Time
-	Hits           int64
+	Hash           string    `json:"hash"`
+	Size           int64     `json:"size"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastAccessedAt time.Time `json:"last_accessed_at"`
+	Hits           int64     `json:"hits"`
 }
 
 type DayStat struct {
@@ -44,6 +44,21 @@ func (s Stats) HitRate() float64 {
 		return 0
 	}
 	return float64(s.Hits) / float64(total) * 100
+}
+
+// Store is the artifact catalog and hit/miss counters.
+// The default implementation keeps this in the S3 bucket; SQLite is optional.
+type Store interface {
+	UpsertEntry(ctx context.Context, hash string, size int64, at time.Time) error
+	RecordHit(ctx context.Context, hash string, at time.Time) error
+	RecordMiss(ctx context.Context, at time.Time) error
+	List(ctx context.Context, query string, limit, offset int) ([]Entry, int, error)
+	ListOlderThan(ctx context.Context, cutoff time.Time) ([]Entry, error)
+	Delete(ctx context.Context, hashes []string) error
+	Stats(ctx context.Context) (Stats, error)
+	EnsureEntry(ctx context.Context, hash string, size int64, at time.Time) error
+	Seed(e Entry) error
+	Close() error
 }
 
 type DB struct {

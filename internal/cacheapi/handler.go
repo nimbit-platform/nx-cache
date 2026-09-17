@@ -18,7 +18,7 @@ var hashPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 type Handler struct {
 	Backend       storage.Backend
-	Store         *store.DB
+	Store         store.Store
 	Cleaner       *cleanup.Cleaner
 	CleanupOnSave bool
 	MaxUpload     int64

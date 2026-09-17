@@ -12,7 +12,7 @@ import (
 
 type Cleaner struct {
 	Backend  storage.Backend
-	Store    *store.DB
+	Store    store.Store
 	TTL      time.Duration
 	Interval time.Duration
 	Log      *slog.Logger

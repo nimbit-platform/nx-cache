@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -190,6 +191,62 @@ func (s *S3) EnsureBucket(ctx context.Context) error {
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+func (s *S3) metaKey(key string) string {
+	key = strings.TrimPrefix(key, "/")
+	return s.prefix + ".meta/" + key
+}
+
+func (s *S3) PutMeta(ctx context.Context, key string, data []byte) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(s.metaKey(key)),
+		Body:          bytes.NewReader(data),
+		ContentLength: aws.Int64(int64(len(data))),
+		ContentType:   aws.String("application/json"),
+	})
+	return err
+}
+
+func (s *S3) GetMeta(ctx context.Context, key string) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.metaKey(key)),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	defer out.Body.Close()
+	return io.ReadAll(out.Body)
+}
+
+func (s *S3) DeleteMeta(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	const batch = 1000
+	for i := 0; i < len(keys); i += batch {
+		end := i + batch
+		if end > len(keys) {
+			end = len(keys)
+		}
+		objs := make([]types.ObjectIdentifier, 0, end-i)
+		for _, k := range keys[i:end] {
+			objs = append(objs, types.ObjectIdentifier{Key: aws.String(s.metaKey(k))})
+		}
+		_, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.bucket),
+			Delete: &types.Delete{Objects: objs, Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -22,7 +22,7 @@ type Object struct {
 	LastModified time.Time
 }
 
-// Backend stores Nx task output archives.
+// Backend stores Nx task output archives and optional catalog metadata.
 type Backend interface {
 	Exists(ctx context.Context, hash string) (bool, error)
 	Put(ctx context.Context, hash string, r io.Reader, size int64) error
@@ -30,6 +30,9 @@ type Backend interface {
 	Delete(ctx context.Context, hashes []string) error
 	List(ctx context.Context) ([]Object, error)
 	EnsureBucket(ctx context.Context) error
+	PutMeta(ctx context.Context, key string, data []byte) error
+	GetMeta(ctx context.Context, key string) ([]byte, error)
+	DeleteMeta(ctx context.Context, keys []string) error
 }
 
 type memObj struct {
@@ -41,12 +44,14 @@ type memObj struct {
 type Memory struct {
 	mu      sync.Mutex
 	objects map[string]memObj
+	meta    map[string][]byte
 	now     func() time.Time
 }
 
 func NewMemory() *Memory {
 	return &Memory{
 		objects: make(map[string]memObj),
+		meta:    make(map[string][]byte),
 		now:     time.Now,
 	}
 }
@@ -105,6 +110,36 @@ func (m *Memory) List(_ context.Context) ([]Object, error) {
 }
 
 func (m *Memory) EnsureBucket(context.Context) error { return nil }
+
+func (m *Memory) PutMeta(_ context.Context, key string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	m.meta[key] = cp
+	return nil
+}
+
+func (m *Memory) GetMeta(_ context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, ok := m.meta[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	return cp, nil
+}
+
+func (m *Memory) DeleteMeta(_ context.Context, keys []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range keys {
+		delete(m.meta, k)
+	}
+	return nil
+}
 
 func (m *Memory) SetTime(t time.Time) {
 	m.now = func() time.Time { return t }
