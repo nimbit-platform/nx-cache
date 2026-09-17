@@ -94,6 +94,7 @@ func (s *Server) allowlist(next http.Handler) http.Handler {
 		}
 		ip := clientIP(r, s.Cfg.TrustForwardedIP)
 		if !ipAllowed(s.Cfg.AllowNets, ip) {
+			s.logger().Warn("ip not allowed", "ip", ip, "path", r.URL.Path)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -110,6 +111,7 @@ func (s *Server) rateLimit(lim *ipLimiter) func(http.Handler) http.Handler {
 			}
 			ip := clientIP(r, s.Cfg.TrustForwardedIP)
 			if !lim.allow(ip) {
+				s.logger().Warn("rate limited", "ip", ip, "path", r.URL.Path)
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "Too many requests", http.StatusTooManyRequests)
 				return

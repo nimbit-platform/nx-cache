@@ -39,7 +39,14 @@ func main() {
 	case "error":
 		level = slog.LevelError
 	}
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	opts := &slog.HandlerOptions{Level: level, AddSource: level <= slog.LevelDebug}
+	var handler slog.Handler
+	if cfg.LogFormat == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
+	log := slog.New(handler)
 	slog.SetDefault(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -183,6 +190,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelError),
 	}
 
 	go func() {
@@ -198,7 +206,11 @@ func main() {
 	}()
 
 	<-ctx.Done()
+	log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Error("shutdown", "err", err)
+	}
+	log.Info("stopped")
 }

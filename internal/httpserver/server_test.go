@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -69,6 +70,29 @@ func TestHealth(t *testing.T) {
 	rec := do(h, http.MethodGet, "/health", "", nil, nil)
 	if rec.Code != 200 || rec.Body.String() != "OK" {
 		t.Fatalf("health: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequestLogUsesSlog(t *testing.T) {
+	s, _, _, _ := testServer(t)
+	var buf bytes.Buffer
+	s.Log = slog.New(slog.NewJSONHandler(&buf, nil))
+	h := s.Handler()
+	rec := do(h, http.MethodGet, "/login", "", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("login page: %d", rec.Code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"http"`) || !strings.Contains(out, `"path":"/login"`) || !strings.Contains(out, `"status":200`) {
+		t.Fatalf("request log: %s", out)
+	}
+	buf.Reset()
+	rec = do(h, http.MethodGet, "/health", "", nil, nil)
+	if rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	if strings.Contains(buf.String(), `"msg":"http"`) {
+		t.Fatalf("health should be debug-only, got %s", buf.String())
 	}
 }
 

@@ -1,6 +1,7 @@
 package cacheapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
+	"github.com/nimbit-platform/nx-cache/internal/reqlog"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
@@ -26,6 +28,15 @@ type Handler struct {
 	CleanupOnSave bool
 	MaxUpload     int64
 	Now           func() time.Time
+	Log           *slog.Logger
+}
+
+func (h *Handler) log(r *http.Request) *slog.Logger {
+	var ctx context.Context
+	if r != nil {
+		ctx = r.Context()
+	}
+	return reqlog.FromOr(ctx, h.Log)
 }
 
 func (h *Handler) now() time.Time {
@@ -62,6 +73,7 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 
 	exists, err := h.Backend.Exists(r.Context(), hash)
 	if err != nil {
+		h.log(r).Error("cache exists check failed", "hash", hash, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -96,19 +108,20 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("cache put failed", "hash", hash, "err", err)
+		h.log(r).Error("cache put failed", "hash", hash, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := h.Store.UpsertEntry(r.Context(), hash, size, h.now(), nxartifact.Merge(headerInfo, inspected)); err != nil {
-		slog.Error("catalog upsert failed after put", "hash", hash, "err", err)
+		h.log(r).Error("catalog upsert failed after put", "hash", hash, "err", err)
 		if delErr := h.Backend.Delete(r.Context(), []string{hash}); delErr != nil {
-			slog.Error("failed to roll back cache object after catalog error", "hash", hash, "err", delErr)
+			h.log(r).Error("failed to roll back cache object after catalog error", "hash", hash, "err", delErr)
 		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	h.log(r).Debug("cache stored", "hash", hash, "bytes", size, "task", nxartifact.Merge(headerInfo, inspected).Label())
 	if h.CleanupOnSave && h.Cleaner != nil {
 		h.Cleaner.MaybeRun(r.Context())
 	}
@@ -131,6 +144,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		h.log(r).Error("cache get failed", "hash", hash, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -153,6 +167,7 @@ func (h *Handler) Head(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, err := h.Backend.Exists(r.Context(), hash)
 	if err != nil {
+		h.log(r).Error("cache head failed", "hash", hash, "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

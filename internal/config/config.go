@@ -13,8 +13,9 @@ import (
 
 // Config is assembled from environment variables at process start.
 type Config struct {
-	Port     string
-	LogLevel string
+	Port      string
+	LogLevel  string
+	LogFormat string
 
 	AWSRegion          string
 	AWSAccessKeyID     string
@@ -109,6 +110,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Port:               env("PORT", "8080"),
 		LogLevel:           env("LOG_LEVEL", "info"),
+		LogFormat:          strings.ToLower(env("LOG_FORMAT", "text")),
 		AWSRegion:          env("AWS_REGION", "us-east-1"),
 		AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 		AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
@@ -174,6 +176,9 @@ func Load() (Config, error) {
 	}
 	if cfg.CatalogFlush < 0 {
 		return Config{}, fmt.Errorf("CATALOG_FLUSH_INTERVAL cannot be negative")
+	}
+	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
+		return Config{}, fmt.Errorf("LOG_FORMAT must be text or json")
 	}
 	return cfg, nil
 }

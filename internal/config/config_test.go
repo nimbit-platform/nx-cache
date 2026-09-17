@@ -25,6 +25,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("ALLOW_IPS", "")
 	t.Setenv("RATE_LIMIT_RPS", "")
 	t.Setenv("RATE_LIMIT_BURST", "")
+	t.Setenv("LOG_FORMAT", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +50,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.SessionSecret == "" || cfg.SessionSecret == "tok:pw" || !cfg.SessionSecretRandom {
 		t.Fatalf("expected ephemeral session secret, got %q", cfg.SessionSecret)
+	}
+	if cfg.LogFormat != "text" {
+		t.Fatalf("log format %s", cfg.LogFormat)
 	}
 	if cfg.TrustForwardedIP {
 		t.Fatal("must not trust forwarded IP by default")

@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 		Cleaner:       s.Cleaner,
 		CleanupOnSave: s.Cfg.CleanupOnSave,
 		MaxUpload:     s.Cfg.MaxUploadBytes,
+		Log:           s.logger(),
 	}
 
 	if s.logins == nil {
@@ -57,7 +58,7 @@ func (s *Server) Handler() http.Handler {
 	r.Use(s.allowlist)
 	r.Use(s.rateLimit(newIPLimiter(s.Cfg.RateLimitRPS, s.Cfg.RateLimitBurst)))
 	r.Use(requestTimeout(30 * time.Second))
-	r.Use(middleware.Logger)
+	r.Use(s.requestLog)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -127,6 +128,7 @@ func (s *Server) loginGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, s.Cfg.TrustForwardedIP)
 	if s.logins != nil && !s.logins.allow(ip) {
+		s.logger().Warn("login locked out", "ip", ip)
 		s.render(w, r, http.StatusTooManyRequests, web.LoginPage(web.LoginData{Error: "Too many attempts, try again later"}))
 		return
 	}
@@ -140,6 +142,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 		if s.logins != nil {
 			s.logins.failure(ip)
 		}
+		s.logger().Warn("login failed", "ip", ip, "username", user)
 		s.render(w, r, http.StatusUnauthorized, web.LoginPage(web.LoginData{
 			Username: user,
 			Error:    "Invalid username or password",
@@ -149,6 +152,7 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	if s.logins != nil {
 		s.logins.success(ip)
 	}
+	s.logger().Info("login", "ip", ip, "username", user)
 	s.Sessions.SetCookie(w, user)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -161,6 +165,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	data, err := s.dashboardData(r)
 	if err != nil {
+		s.logger().Error("dashboard", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -170,6 +175,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) entries(w http.ResponseWriter, r *http.Request) {
 	data, err := s.dashboardData(r)
 	if err != nil {
+		s.logger().Error("dashboard entries", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -179,6 +185,7 @@ func (s *Server) entries(w http.ResponseWriter, r *http.Request) {
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	data, err := s.dashboardData(r)
 	if err != nil {
+		s.logger().Error("dashboard stats", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -188,6 +195,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cleanupNow(w http.ResponseWriter, r *http.Request) {
 	n, err := s.Cleaner.Run(r.Context())
 	if err != nil {
+		s.logger().Error("manual cleanup", "err", err)
 		http.Error(w, "cleanup failed", http.StatusInternalServerError)
 		return
 	}
@@ -216,7 +224,7 @@ func (s *Server) dashboardData(r *http.Request) (web.DashboardData, error) {
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, c templ.Component) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := c.Render(r.Context(), w); err != nil && s.Log != nil {
-		s.Log.Error("render template", "err", err)
+	if err := c.Render(r.Context(), w); err != nil {
+		s.logger().Error("render template", "err", err)
 	}
 }
