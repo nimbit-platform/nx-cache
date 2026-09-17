@@ -164,7 +164,7 @@ If the package is private, `docker login ghcr.io` with a GitHub token that can r
 
 ## Development
 
-Requires Go 1.25+ and [templ](https://templ.guide).
+Requires Go 1.27+ and [templ](https://templ.guide).
 
 ```bash
 go install github.com/a-h/templ/cmd/templ@v0.3.943

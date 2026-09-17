@@ -9,7 +9,7 @@ COPY components ./components
 COPY internal/web ./internal/web
 RUN npx @tailwindcss/cli -i assets/css/globals.css -o /out/app.css --minify
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.27-alpine AS build
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
