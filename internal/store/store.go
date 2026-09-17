@@ -8,11 +8,40 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// TaskInfo is inferred from the Nx cache tar (terminalOutput / outputs)
+// or optional X-Nx-* headers. The OpenAPI PUT only sends a content hash.
+type TaskInfo struct {
+	Project string `json:"project,omitempty"`
+	Target  string `json:"target,omitempty"`
+	Config  string `json:"config,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+}
+
+func (t TaskInfo) Empty() bool {
+	return t.Project == "" && t.Target == "" && t.Kind == ""
+}
+
+func (t TaskInfo) Label() string {
+	switch {
+	case t.Project != "" && t.Target != "" && t.Config != "":
+		return t.Project + ":" + t.Target + ":" + t.Config
+	case t.Project != "" && t.Target != "":
+		return t.Project + ":" + t.Target
+	case t.Target != "":
+		return t.Target
+	case t.Project != "":
+		return t.Project
+	default:
+		return ""
+	}
+}
 
 type Entry struct {
 	Hash           string    `json:"hash"`
@@ -20,6 +49,12 @@ type Entry struct {
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at"`
 	Hits           int64     `json:"hits"`
+	TaskInfo
+}
+
+type KindCount struct {
+	Kind  string
+	Count int64
 }
 
 type DayStat struct {
@@ -36,6 +71,7 @@ type Stats struct {
 	Misses    int64
 	Stores    int64
 	Days      []DayStat
+	ByKind    []KindCount
 }
 
 func (s Stats) HitRate() float64 {
@@ -49,7 +85,7 @@ func (s Stats) HitRate() float64 {
 // Store is the artifact catalog and hit/miss counters.
 // The default implementation keeps this in the S3 bucket; SQLite is optional.
 type Store interface {
-	UpsertEntry(ctx context.Context, hash string, size int64, at time.Time) error
+	UpsertEntry(ctx context.Context, hash string, size int64, at time.Time, info TaskInfo) error
 	RecordHit(ctx context.Context, hash string, at time.Time) error
 	RecordMiss(ctx context.Context, at time.Time) error
 	List(ctx context.Context, query string, limit, offset int) ([]Entry, int, error)
@@ -114,16 +150,27 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   stores INTEGER NOT NULL DEFAULT 0
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, col := range []string{"project", "target", "config", "kind"} {
+		_, _ = d.sql.Exec("ALTER TABLE cache_entries ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''")
+	}
+	return nil
 }
 
-func (d *DB) UpsertEntry(ctx context.Context, hash string, size int64, at time.Time) error {
+func (d *DB) UpsertEntry(ctx context.Context, hash string, size int64, at time.Time, info TaskInfo) error {
 	unix := at.Unix()
 	_, err := d.sql.ExecContext(ctx, `
-INSERT INTO cache_entries(hash, size, created_at, last_accessed_at, hits)
-VALUES (?, ?, ?, ?, 0)
-ON CONFLICT(hash) DO UPDATE SET size = excluded.size
-`, hash, size, unix, unix)
+INSERT INTO cache_entries(hash, size, created_at, last_accessed_at, hits, project, target, config, kind)
+VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
+ON CONFLICT(hash) DO UPDATE SET
+  size = excluded.size,
+  project = CASE WHEN excluded.project = '' THEN project ELSE excluded.project END,
+  target = CASE WHEN excluded.target = '' THEN target ELSE excluded.target END,
+  config = CASE WHEN excluded.config = '' THEN config ELSE excluded.config END,
+  kind = CASE WHEN excluded.kind = '' THEN kind ELSE excluded.kind END
+`, hash, size, unix, unix, info.Project, info.Target, info.Config, info.Kind)
 	if err != nil {
 		return err
 	}
@@ -174,8 +221,9 @@ func (d *DB) List(ctx context.Context, query string, limit, offset int) ([]Entry
 	args := []any{}
 	where := ""
 	if q := strings.TrimSpace(query); q != "" {
-		where = "WHERE hash LIKE ?"
-		args = append(args, "%"+q+"%")
+		like := "%" + q + "%"
+		where = "WHERE hash LIKE ? OR project LIKE ? OR target LIKE ? OR kind LIKE ? OR (project || ':' || target) LIKE ?"
+		args = append(args, like, like, like, like, like)
 	}
 	var total int
 	countArgs := append([]any{}, args...)
@@ -184,7 +232,7 @@ func (d *DB) List(ctx context.Context, query string, limit, offset int) ([]Entry
 	}
 	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx, `
-SELECT hash, size, created_at, last_accessed_at, hits
+SELECT hash, size, created_at, last_accessed_at, hits, project, target, config, kind
 FROM cache_entries `+where+`
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?`, args...)
@@ -196,7 +244,7 @@ LIMIT ? OFFSET ?`, args...)
 	for rows.Next() {
 		var e Entry
 		var created, accessed int64
-		if err := rows.Scan(&e.Hash, &e.Size, &created, &accessed, &e.Hits); err != nil {
+		if err := rows.Scan(&e.Hash, &e.Size, &created, &accessed, &e.Hits, &e.Project, &e.Target, &e.Config, &e.Kind); err != nil {
 			return nil, 0, err
 		}
 		e.CreatedAt = time.Unix(created, 0).UTC()
@@ -208,7 +256,7 @@ LIMIT ? OFFSET ?`, args...)
 
 func (d *DB) ListOlderThan(ctx context.Context, cutoff time.Time) ([]Entry, error) {
 	rows, err := d.sql.QueryContext(ctx, `
-SELECT hash, size, created_at, last_accessed_at, hits
+SELECT hash, size, created_at, last_accessed_at, hits, project, target, config, kind
 FROM cache_entries WHERE created_at < ?
 `, cutoff.Unix())
 	if err != nil {
@@ -219,7 +267,7 @@ FROM cache_entries WHERE created_at < ?
 	for rows.Next() {
 		var e Entry
 		var created, accessed int64
-		if err := rows.Scan(&e.Hash, &e.Size, &created, &accessed, &e.Hits); err != nil {
+		if err := rows.Scan(&e.Hash, &e.Size, &created, &accessed, &e.Hits, &e.Project, &e.Target, &e.Config, &e.Kind); err != nil {
 			return nil, err
 		}
 		e.CreatedAt = time.Unix(created, 0).UTC()
@@ -258,6 +306,25 @@ func (d *DB) Stats(ctx context.Context) (Stats, error) {
 	if err := d.sql.QueryRowContext(ctx, `SELECT value FROM counters WHERE key = 'stores'`).Scan(&s.Stores); err != nil {
 		return Stats{}, err
 	}
+	kindRows, err := d.sql.QueryContext(ctx, `SELECT kind, COUNT(*) FROM cache_entries GROUP BY kind`)
+	if err != nil {
+		return Stats{}, err
+	}
+	counts := map[string]int64{}
+	for kindRows.Next() {
+		var kind string
+		var n int64
+		if err := kindRows.Scan(&kind, &n); err != nil {
+			kindRows.Close()
+			return Stats{}, err
+		}
+		if kind == "" {
+			kind = "unknown"
+		}
+		counts[kind] += n
+	}
+	kindRows.Close()
+	s.ByKind = kindCountsFromMap(counts)
 	since := time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02")
 	rows, err := d.sql.QueryContext(ctx, `
 SELECT day, hits, misses, stores FROM daily_stats WHERE day >= ? ORDER BY day ASC
@@ -287,13 +354,51 @@ VALUES (?, ?, ?, ?, 0)
 
 func (d *DB) Seed(e Entry) error {
 	_, err := d.sql.Exec(`
-INSERT INTO cache_entries(hash, size, created_at, last_accessed_at, hits)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO cache_entries(hash, size, created_at, last_accessed_at, hits, project, target, config, kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hash) DO UPDATE SET
   size = excluded.size,
   created_at = excluded.created_at,
   last_accessed_at = excluded.last_accessed_at,
-  hits = excluded.hits
-`, e.Hash, e.Size, e.CreatedAt.Unix(), e.LastAccessedAt.Unix(), e.Hits)
+  hits = excluded.hits,
+  project = excluded.project,
+  target = excluded.target,
+  config = excluded.config,
+  kind = excluded.kind
+`, e.Hash, e.Size, e.CreatedAt.Unix(), e.LastAccessedAt.Unix(), e.Hits, e.Project, e.Target, e.Config, e.Kind)
 	return err
 }
+
+func (e Entry) MatchesQuery(query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(e.Hash), q) ||
+		strings.Contains(strings.ToLower(e.Project), q) ||
+		strings.Contains(strings.ToLower(e.Target), q) ||
+		strings.Contains(strings.ToLower(e.Kind), q) ||
+		strings.Contains(strings.ToLower(e.Label()), q)
+}
+
+func kindCountsFromMap(counts map[string]int64) []KindCount {
+	order := []string{"build", "test", "lint", "e2e", "typecheck"}
+	seen := map[string]bool{}
+	var out []KindCount
+	for _, k := range order {
+		if n := counts[k]; n > 0 {
+			out = append(out, KindCount{Kind: k, Count: n})
+			seen[k] = true
+		}
+	}
+	var extra []KindCount
+	for k, n := range counts {
+		if seen[k] || n == 0 {
+			continue
+		}
+		extra = append(extra, KindCount{Kind: k, Count: n})
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i].Kind < extra[j].Kind })
+	return append(out, extra...)
+}
+

@@ -40,13 +40,13 @@ templ DashboardPage(data DashboardData) {
 						Cached artifacts
 					}
 					@card.Description() {
-						Search by hash. Age is time since the artifact was first stored.
+						Task names come from Nx terminal output inside each cache tar (build, test, lint, …). Age is time since first store.
 					}
 					@card.Action() {
 						@input.Input(input.Props{
 							Name:        "q",
 							Value:       data.Query,
-							Placeholder: "Filter hash…",
+							Placeholder: "Filter task or hash…",
 							Class:       "w-56",
 							Attributes: templ.Attributes{
 								"hx-get":         "/ui/entries",
@@ -74,6 +74,16 @@ templ StatsSection(data DashboardData) {
 		@statCard("Storage", FormatBytes(data.Stats.TotalSize), "Total size on S3")
 		@statCard("Hit rate", FormatRate(data.Stats), fmt.Sprintf("%d stores", data.Stats.Stores))
 		@statCard("Hits / misses", fmt.Sprintf("%d / %d", data.Stats.Hits, data.Stats.Misses), "Nx GET outcomes")
+		if len(data.Kinds) > 0 {
+			<div class="md:col-span-4 flex flex-wrap items-center gap-2">
+				<span class="text-muted-foreground text-xs">By target</span>
+				for _, k := range data.Kinds {
+					@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: KindBadgeClass(k.Kind)}) {
+						{ fmt.Sprintf("%s %d", k.Kind, k.Count) }
+					}
+				}
+			</div>
+		}
 		<div class="md:col-span-4">
 			@card.Card() {
 				@card.Header() {
@@ -117,11 +127,17 @@ templ statCard(title, value, hint string) {
 
 templ EntriesSection(data DashboardData) {
 	if len(data.Entries) == 0 {
-		<p class="text-muted-foreground py-10 text-center text-sm">No cache artifacts yet. Point Nx at this server and run a build.</p>
+		<p class="text-muted-foreground py-10 text-center text-sm">No cache artifacts yet. Point Nx at this server and run a build, test, or lint.</p>
 	} else {
 		@table.Table() {
 			@table.Header() {
 				@table.Row() {
+					@table.Head() {
+						Task
+					}
+					@table.Head() {
+						Kind
+					}
 					@table.Head() {
 						Hash
 					}
@@ -142,8 +158,24 @@ templ EntriesSection(data DashboardData) {
 			@table.Body() {
 				for _, e := range data.Entries {
 					@table.Row() {
-						@table.Cell(table.CellProps{Class: "font-mono text-xs"}) {
-							{ e.Hash }
+						@table.Cell() {
+							if e.Label != "" {
+								<div class="font-medium">{ e.Label }</div>
+							} else {
+								<div class="text-muted-foreground">Unknown task</div>
+							}
+						}
+						@table.Cell() {
+							if e.Kind != "" {
+								@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: KindBadgeClass(e.Kind)}) {
+									{ e.Kind }
+								}
+							} else {
+								<span class="text-muted-foreground text-xs">—</span>
+							}
+						}
+						@table.Cell(table.CellProps{Class: "font-mono text-xs text-muted-foreground"}) {
+							<span title={ e.Hash }>{ e.HashShort }</span>
 						}
 						@table.Cell() {
 							{ e.Size }

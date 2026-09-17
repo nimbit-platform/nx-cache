@@ -21,6 +21,7 @@ License: [MIT](LICENSE).
 - Optional read-only token (`403` on write)
 - Artifacts older than **5 days** are deleted by a background job **and** after a successful save
 - Dashboard (templ + HTMX + Tailwind + [shadcn-templ](https://github.com/axadrn/shadcn-templ)) with session login
+- Infers **project:target** (build / test / lint / …) from the Nx tar's `terminalOutput` — the OpenAPI PUT only sends a content hash
 
 ## Quick start
 
@@ -120,6 +121,8 @@ Authorization: `Authorization: Bearer <token>`.
 ## Testing
 
 An Nx workspace is **not** required to verify this server. Nx only speaks `PUT` / `GET` / `HEAD` `/v1/cache/{hash}` with a bearer token and an `application/octet-stream` body. Controller tests and the RustFS e2e suite send that same protocol.
+
+Nx does **not** send the task name on the wire. Each payload is a gzip tar of the local cache dir, including `terminalOutput` (typically `> nx run web:build`). The dashboard parses that (and output paths) to show **Task** and **Kind** (build, test, lint, e2e, typecheck). Optional headers `X-Nx-Project`, `X-Nx-Target`, and `X-Nx-Configuration` override inference if a wrapper sets them.
 
 ```bash
 make test          # unit + HTTP controller tests (in-memory backend)

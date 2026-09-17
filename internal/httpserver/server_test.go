@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/auth"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
+	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
@@ -341,5 +343,56 @@ func TestDashboardListsArtifactsAndHTMX(t *testing.T) {
 	}
 	if !cleared {
 		t.Fatal("expected session cookie to be cleared")
+	}
+}
+
+func TestDashboardShowsTaskFromNxTar(t *testing.T) {
+	_, h, _, _ := testServer(t)
+	payload, err := nxartifact.Pack("> nx run web:build:production\ncompiled\n", 0, map[string][]byte{
+		"outputs/apps/web/dist/main.js": []byte("ok"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := do(h, http.MethodPut, "/v1/cache/taskhash1", "write-token", payload, map[string]string{
+		"Content-Length": strconv.Itoa(len(payload)),
+	})
+	if rec.Code != 200 {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+
+	lintTar, err := nxartifact.Pack("> nx run api:lint\n", 0, map[string][]byte{"outputs/libs/api/.eslintcache": []byte("{}")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = do(h, http.MethodPut, "/v1/cache/taskhash2", "write-token", lintTar, map[string]string{
+		"Content-Length": strconv.Itoa(len(lintTar)),
+	})
+	if rec.Code != 200 {
+		t.Fatalf("put lint: %d", rec.Code)
+	}
+
+	cookie := loginCookie(t, h)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 {
+		t.Fatalf("dashboard: %d", rec.Code)
+	}
+	for _, want := range []string{"web:build:production", "api:lint", "build", "lint", "By target"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q in dashboard: %s", want, body[:min(800, len(body))])
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/entries?q=lint", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	got := rec.Body.String()
+	if !strings.Contains(got, "api:lint") || strings.Contains(got, "web:build") {
+		t.Fatalf("filter lint: %s", got)
 	}
 }

@@ -173,7 +173,7 @@ func (o *Object) cloneLocked() snapshot {
 	}
 }
 
-func (o *Object) UpsertEntry(_ context.Context, hash string, size int64, at time.Time) error {
+func (o *Object) UpsertEntry(_ context.Context, hash string, size int64, at time.Time, info TaskInfo) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	e := o.entries[hash]
@@ -183,6 +183,18 @@ func (o *Object) UpsertEntry(_ context.Context, hash string, size int64, at time
 	e.Size = size
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = at
+	}
+	if info.Project != "" {
+		e.Project = info.Project
+	}
+	if info.Target != "" {
+		e.Target = info.Target
+	}
+	if info.Config != "" {
+		e.Config = info.Config
+	}
+	if info.Kind != "" {
+		e.Kind = info.Kind
 	}
 	o.entries[hash] = e
 	o.bumpLocked("stores", at)
@@ -222,7 +234,7 @@ func (o *Object) List(ctx context.Context, query string, limit, offset int) ([]E
 	if q != "" {
 		filtered := make([]Entry, 0, len(entries))
 		for _, e := range entries {
-			if strings.Contains(strings.ToLower(e.Hash), q) {
+			if e.MatchesQuery(q) {
 				filtered = append(filtered, e)
 			}
 		}
@@ -277,9 +289,16 @@ func (o *Object) Stats(ctx context.Context) (Stats, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	s := Stats{Entries: int64(len(entries)), Hits: o.stats.Hits, Misses: o.stats.Misses, Stores: o.stats.Stores}
+	counts := map[string]int64{}
 	for _, e := range entries {
 		s.TotalSize += e.Size
+		kind := e.Kind
+		if kind == "" {
+			kind = "unknown"
+		}
+		counts[kind]++
 	}
+	s.ByKind = kindCountsFromMap(counts)
 	since := time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02")
 	for day, st := range o.stats.Days {
 		if day >= since && st != nil {
@@ -335,6 +354,10 @@ func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
 			if meta.Size > 0 {
 				e.Size = meta.Size
 			}
+			e.Project = meta.Project
+			e.Target = meta.Target
+			e.Config = meta.Config
+			e.Kind = meta.Kind
 		}
 		entries = append(entries, e)
 	}

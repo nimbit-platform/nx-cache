@@ -18,10 +18,10 @@ func TestStatsAndList(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	now := time.Now()
-	if err := db.UpsertEntry(ctx, "aaa", 10, now); err != nil {
+	if err := db.UpsertEntry(ctx, "aaa", 10, now, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.UpsertEntry(ctx, "bbb", 20, now); err != nil {
+	if err := db.UpsertEntry(ctx, "bbb", 20, now, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.RecordHit(ctx, "aaa", now); err != nil {
@@ -39,6 +39,16 @@ func TestStatsAndList(t *testing.T) {
 	}
 	if stats.HitRate() < 49 || stats.HitRate() > 51 {
 		t.Fatalf("hit rate %f", stats.HitRate())
+	}
+	if err := db.UpsertEntry(ctx, "ccc", 5, now, TaskInfo{Project: "web", Target: "lint", Kind: "lint"}); err != nil {
+		t.Fatal(err)
+	}
+	linted, n, err := db.List(ctx, "lint", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || linted[0].Label() != "web:lint" {
+		t.Fatalf("task filter %d %+v", n, linted)
 	}
 	entries, total, err := db.List(ctx, "aa", 10, 0)
 	if err != nil {
@@ -60,10 +70,10 @@ func TestObjectCatalog(t *testing.T) {
 	if err := mem.Put(ctx, "bbb", strings.NewReader("abcdefghijklmnopqrst"), 20); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpsertEntry(ctx, "aaa", 10, now); err != nil {
+	if err := cat.UpsertEntry(ctx, "aaa", 10, now, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpsertEntry(ctx, "bbb", 20, now); err != nil {
+	if err := cat.UpsertEntry(ctx, "bbb", 20, now, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.RecordHit(ctx, "aaa", now); err != nil {
@@ -96,7 +106,7 @@ func TestObjectCatalogFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat := NewObject(mem)
-	if err := cat.UpsertEntry(ctx, "aaa", 10, now); err != nil {
+	if err := cat.UpsertEntry(ctx, "aaa", 10, now, TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cat.RecordHit(ctx, "aaa", now); err != nil {
@@ -130,7 +140,7 @@ func TestObjectCatalogFlushInterval(t *testing.T) {
 	if err := mem.Put(ctx, "zzz", strings.NewReader("payloadxx"), 9); err != nil {
 		t.Fatal(err)
 	}
-	if err := cat.UpsertEntry(ctx, "zzz", 9, time.Now()); err != nil {
+	if err := cat.UpsertEntry(ctx, "zzz", 9, time.Now(), TaskInfo{}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)

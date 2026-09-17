@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
+	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
@@ -67,7 +69,19 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.Backend.Put(r.Context(), hash, r.Body, size)
+	headerInfo := nxartifact.FromHeaders(r.Header)
+	pr, pw := io.Pipe()
+	var inspected store.TaskInfo
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		inspected = nxartifact.Inspect(pr)
+		_, _ = io.Copy(io.Discard, pr)
+	}()
+	err = h.Backend.Put(r.Context(), hash, io.TeeReader(r.Body, pw), size)
+	_ = pw.Close()
+	wg.Wait()
 	if errors.Is(err, storage.ErrExists) {
 		http.Error(w, "Cannot override an existing record", http.StatusConflict)
 		return
@@ -81,7 +95,7 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Store.UpsertEntry(r.Context(), hash, size, h.now()); err != nil {
+	if err := h.Store.UpsertEntry(r.Context(), hash, size, h.now(), nxartifact.Merge(headerInfo, inspected)); err != nil {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

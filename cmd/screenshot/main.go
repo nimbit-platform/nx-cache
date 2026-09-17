@@ -17,6 +17,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
 	"github.com/nimbit-platform/nx-cache/internal/httpserver"
+	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 	"github.com/nimbit-platform/nx-cache/internal/web"
@@ -112,24 +113,45 @@ func startEmbedded(user, pass string) (string, func(), error) {
 	ts := httptest.NewServer(srv.Handler())
 
 	seeds := []struct {
-		hash string
-		body string
-		hits int
+		hash     string
+		terminal string
+		files    map[string][]byte
+		hits     int
 	}{
-		{hash: "nx-js-tsc-a1b2c3d4e5f6", body: "typescript-build-output", hits: 4},
-		{hash: "nx-next-build-9f8e7d6c5b", body: "next-production-bundle", hits: 2},
-		{hash: "nx-eslint-lint-1122334455", body: "eslint-cache-payload", hits: 1},
+		{
+			hash:     "a1b2c3d4e5f6a7b8c9d0",
+			terminal: "> nx run web:build:production\ncompiled successfully\n",
+			files:    map[string][]byte{"outputs/apps/web/dist/main.js": []byte("console.log(1)")},
+			hits:     4,
+		},
+		{
+			hash:     "9f8e7d6c5b4a3210fedc",
+			terminal: "> nx run api:test\nTests: 12 passed\n",
+			files:    map[string][]byte{"outputs/coverage/api/lcov.info": []byte("TN:")},
+			hits:     2,
+		},
+		{
+			hash:     "11223344556677889900",
+			terminal: "> nx run api:lint\n",
+			files:    map[string][]byte{"outputs/libs/api/.eslintcache": []byte("{}")},
+			hits:     1,
+		},
 	}
 	client := ts.Client()
 	for _, s := range seeds {
-		req, err := http.NewRequest(http.MethodPut, ts.URL+"/v1/cache/"+s.hash, bytes.NewReader([]byte(s.body)))
+		body, err := nxartifact.Pack(s.terminal, 0, s.files)
+		if err != nil {
+			ts.Close()
+			return "", nil, err
+		}
+		req, err := http.NewRequest(http.MethodPut, ts.URL+"/v1/cache/"+s.hash, bytes.NewReader(body))
 		if err != nil {
 			ts.Close()
 			return "", nil, err
 		}
 		req.Header.Set("Authorization", "Bearer dev-token")
 		req.Header.Set("Content-Type", "application/octet-stream")
-		req.ContentLength = int64(len(s.body))
+		req.ContentLength = int64(len(body))
 		resp, err := client.Do(req)
 		if err != nil {
 			ts.Close()
