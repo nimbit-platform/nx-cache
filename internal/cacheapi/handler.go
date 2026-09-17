@@ -3,6 +3,7 @@ package cacheapi
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -91,6 +92,7 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		slog.Error("cache put failed", "hash", hash, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

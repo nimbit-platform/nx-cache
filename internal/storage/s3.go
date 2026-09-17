@@ -49,6 +49,9 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Endpoint != "" {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
+			// AWS SDK v2 defaults to CRC32 checksums that RustFS/MinIO/R2 often reject.
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		}
 		o.UsePathStyle = cfg.ForcePathStyle
 	})

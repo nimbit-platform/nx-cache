@@ -41,6 +41,8 @@ jobs:
       AWS_SECRET_ACCESS_KEY: nxcache-e2e-secret-key
       S3_BUCKET_NAME: nx-cache-e2e
       E2E_REQUIRE_RUSTFS: "1"
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
