@@ -93,11 +93,13 @@ func main() {
 			Log:           log,
 		})
 		if err := obj.Load(ctx); err != nil {
-			log.Warn("could not load catalog snapshot from s3", "err", err)
+			log.Error("could not load catalog snapshot from s3", "err", err)
+			os.Exit(1)
 		}
 		obj.Start(ctx)
 		catalog = obj
 		log.Info("catalog backend", "type", "s3", "flush", cfg.CatalogFlush.String())
+		log.Warn("S3 catalog is single-replica; run only one process per bucket prefix")
 	}
 	defer func() {
 		if err := catalog.Close(); err != nil {
@@ -114,20 +116,25 @@ func main() {
 	}
 	cleaner.Start(ctx)
 
-	if objects, err := backend.List(ctx); err != nil {
-		log.Warn("could not list existing cache objects", "err", err)
-	} else {
+	go func() {
+		recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		objects, err := backend.List(recCtx)
+		if err != nil {
+			log.Warn("could not list existing cache objects", "err", err)
+			return
+		}
 		for _, obj := range objects {
 			at := obj.LastModified
 			if at.IsZero() {
 				at = time.Now()
 			}
-			if err := catalog.EnsureEntry(ctx, obj.Hash, obj.Size, at); err != nil {
+			if err := catalog.EnsureEntry(recCtx, obj.Hash, obj.Size, at); err != nil {
 				log.Warn("reconcile cache entry", "hash", obj.Hash, "err", err)
 			}
 		}
 		log.Info("reconciled cache catalog", "objects", len(objects))
-	}
+	}()
 
 	staticFS, err := web.Static()
 	if err != nil {
@@ -143,16 +150,22 @@ func main() {
 		Sessions: &auth.Sessions{
 			Secret:   []byte(cfg.SessionSecret),
 			Username: cfg.UIUsername,
-			Secure:   os.Getenv("SESSION_SECURE") == "true",
+			Secure:   cfg.SessionSecure,
 		},
 		Log:    log,
 		Static: staticFS,
+	}
+
+	if cfg.SessionSecretRandom {
+		log.Warn("SESSION_SECRET was unset; generated an ephemeral secret (sessions will not survive restart)")
 	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	go func() {

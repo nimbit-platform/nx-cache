@@ -2,11 +2,14 @@ package cacheapi
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
@@ -17,7 +20,7 @@ func TestValidHash(t *testing.T) {
 	if !ValidHash("abc123") || !ValidHash("A.b_c-9") {
 		t.Fatal("expected valid hashes")
 	}
-	if ValidHash("") || ValidHash("../etc") || ValidHash("has space") || ValidHash("slash/x") {
+	if ValidHash("") || ValidHash("../etc") || ValidHash("has space") || ValidHash("slash/x") || ValidHash(".meta") || ValidHash(".") || ValidHash("..") {
 		t.Fatal("expected invalid hashes")
 	}
 	long := make([]byte, 129)
@@ -110,5 +113,36 @@ func TestPutGetHeadContract(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("too large: %d", rec.Code)
+	}
+}
+
+type failUpsert struct {
+	store.Store
+}
+
+func (f failUpsert) UpsertEntry(context.Context, string, int64, time.Time, store.TaskInfo) error {
+	return errors.New("catalog down")
+}
+
+func TestPutRollsBackObjectWhenCatalogFails(t *testing.T) {
+	mem := storage.NewMemory()
+	h := &Handler{
+		Backend:   mem,
+		Store:     failUpsert{Store: store.NewObject(mem)},
+		MaxUpload: 64,
+	}
+	r := chi.NewRouter()
+	r.Put("/v1/cache/{hash}", h.Put)
+	payload := []byte("nx-tar-bytes")
+	req := httptest.NewRequest(http.MethodPut, "/v1/cache/task-9", bytes.NewReader(payload))
+	req.Header.Set("Content-Length", strconv.Itoa(len(payload)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != 500 {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+	ok, err := mem.Exists(context.Background(), "task-9")
+	if err != nil || ok {
+		t.Fatalf("object should be deleted after catalog failure, exists=%v err=%v", ok, err)
 	}
 }

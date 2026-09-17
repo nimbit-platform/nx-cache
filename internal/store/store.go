@@ -117,7 +117,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxOpenConns(1) // SQLite writers must be serialized
 	db := &DB{sql: sqlDB}
 	if err := db.migrate(); err != nil {
 		_ = sqlDB.Close()
@@ -154,9 +154,18 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 		return err
 	}
 	for _, col := range []string{"project", "target", "config", "kind"} {
-		_, _ = d.sql.Exec("ALTER TABLE cache_entries ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''")
+		if _, err := d.sql.Exec("ALTER TABLE cache_entries ADD COLUMN " + col + " TEXT NOT NULL DEFAULT ''"); err != nil && !isDuplicateColumn(err) {
+			return err
+		}
 	}
 	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func (d *DB) UpsertEntry(ctx context.Context, hash string, size int64, at time.Time, info TaskInfo) error {
@@ -221,8 +230,8 @@ func (d *DB) List(ctx context.Context, query string, limit, offset int) ([]Entry
 	args := []any{}
 	where := ""
 	if q := strings.TrimSpace(query); q != "" {
-		like := "%" + q + "%"
-		where = "WHERE hash LIKE ? OR project LIKE ? OR target LIKE ? OR kind LIKE ? OR (project || ':' || target) LIKE ?"
+		like := likeContains(q)
+		where = "WHERE hash LIKE ? ESCAPE '\\' OR project LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR kind LIKE ? ESCAPE '\\' OR (project || ':' || target) LIKE ? ESCAPE '\\'"
 		args = append(args, like, like, like, like, like)
 	}
 	var total int
@@ -402,3 +411,7 @@ func kindCountsFromMap(counts map[string]int64) []KindCount {
 	return append(out, extra...)
 }
 
+func likeContains(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}

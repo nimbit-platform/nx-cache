@@ -3,7 +3,7 @@
 FROM node:22-alpine AS css
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --ignore-scripts
+RUN npm ci --ignore-scripts
 COPY assets ./assets
 COPY components ./components
 COPY internal/web ./internal/web
@@ -34,6 +34,6 @@ RUN adduser -D -H -u 65532 cache \
  && chown cache:cache /data
 USER cache
 EXPOSE 8080
-ENV PORT=8080 CATALOG_BACKEND=s3
+ENV PORT=8080 CATALOG_BACKEND=s3 SQLITE_PATH=/data/nx-cache.db
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 ENTRYPOINT ["/usr/local/bin/nx-cache"]

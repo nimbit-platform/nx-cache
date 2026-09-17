@@ -66,9 +66,12 @@ func (c *Cleaner) MaybeRun(ctx context.Context) {
 		c.mu.Unlock()
 		return
 	}
+	c.lastRun = time.Now()
 	c.mu.Unlock()
 	go func() {
-		if _, err := c.Run(context.WithoutCancel(ctx)); err != nil {
+		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		if _, err := c.Run(runCtx); err != nil {
 			c.logger().Error("opportunistic cache cleanup failed", "err", err)
 		}
 	}()

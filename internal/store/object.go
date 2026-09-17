@@ -15,6 +15,8 @@ import (
 
 const catalogMetaKey = "catalog.json"
 
+var ErrCatalogLoadFailed = errors.New("catalog snapshot was not loaded; refusing to flush")
+
 type objectStats struct {
 	Hits   int64               `json:"hits"`
 	Misses int64               `json:"misses"`
@@ -43,6 +45,7 @@ type Object struct {
 	entries    map[string]Entry
 	stats      objectStats
 	dirty      bool
+	loadFailed bool
 	wg         sync.WaitGroup
 }
 
@@ -67,13 +70,22 @@ func NewObject(backend storage.Backend, opts ...ObjectOptions) *Object {
 func (o *Object) Load(ctx context.Context) error {
 	data, err := o.backend.GetMeta(ctx, catalogMetaKey)
 	if errors.Is(err, storage.ErrNotFound) {
+		o.mu.Lock()
+		o.loadFailed = false
+		o.mu.Unlock()
 		return nil
 	}
 	if err != nil {
+		o.mu.Lock()
+		o.loadFailed = true
+		o.mu.Unlock()
 		return err
 	}
 	var snap snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
+		o.mu.Lock()
+		o.loadFailed = true
+		o.mu.Unlock()
 		return err
 	}
 	o.mu.Lock()
@@ -86,6 +98,7 @@ func (o *Object) Load(ctx context.Context) error {
 		o.stats.Days = map[string]*DayStat{}
 	}
 	o.dirty = false
+	o.loadFailed = false
 	return nil
 }
 
@@ -123,6 +136,10 @@ func (o *Object) Flush(ctx context.Context) error {
 	defer o.flushMu.Unlock()
 
 	o.mu.Lock()
+	if o.loadFailed {
+		o.mu.Unlock()
+		return ErrCatalogLoadFailed
+	}
 	if !o.dirty {
 		o.mu.Unlock()
 		return nil
@@ -333,32 +350,11 @@ func (o *Object) Seed(e Entry) error {
 	return nil
 }
 
-func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
-	objects, err := o.backend.List(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (o *Object) allEntries(context.Context) ([]Entry, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	entries := make([]Entry, 0, len(objects))
-	for _, obj := range objects {
-		e := Entry{Hash: obj.Hash, Size: obj.Size, CreatedAt: obj.LastModified, LastAccessedAt: obj.LastModified}
-		if meta, ok := o.entries[obj.Hash]; ok {
-			if !meta.CreatedAt.IsZero() {
-				e.CreatedAt = meta.CreatedAt
-			}
-			if !meta.LastAccessedAt.IsZero() {
-				e.LastAccessedAt = meta.LastAccessedAt
-			}
-			e.Hits = meta.Hits
-			if meta.Size > 0 {
-				e.Size = meta.Size
-			}
-			e.Project = meta.Project
-			e.Target = meta.Target
-			e.Config = meta.Config
-			e.Kind = meta.Kind
-		}
+	entries := make([]Entry, 0, len(o.entries))
+	for _, e := range o.entries {
 		entries = append(entries, e)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].CreatedAt.After(entries[j].CreatedAt) })

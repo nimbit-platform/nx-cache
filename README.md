@@ -34,6 +34,7 @@ docker run --rm -p 8080:8080 \
   -e UI_USERNAME=admin \
   -e UI_PASSWORD=choose-a-password \
   -e SESSION_SECRET=choose-a-secret \
+  -e SESSION_SECURE=false \
   -e AWS_REGION=us-east-1 \
   -e AWS_ACCESS_KEY_ID=... \
   -e AWS_SECRET_ACCESS_KEY=... \
@@ -47,8 +48,12 @@ Local RustFS stack:
 
 RustFS starts with no buckets. You do **not** need a separate create-bucket image or init container: compose sets `S3_CREATE_BUCKET=true`, and the cache process creates `S3_BUCKET_NAME` on boot (`HeadBucket` then `CreateBucket`). The e2e suite does the same via `EnsureBucket`.
 
+Copy `.env.example` to `.env` and set `NX_CACHE_ACCESS_TOKEN`, `UI_PASSWORD`, and `SESSION_SECRET`. Compose binds to `127.0.0.1` and refuses to start without those values.
+
 ```bash
-UI_PASSWORD=choose-a-password docker compose up --build
+cp .env.example .env
+# edit UI_PASSWORD / tokens
+docker compose up --build
 ```
 
 - Cache API: `http://localhost:8080`
@@ -62,7 +67,7 @@ There is no in-app account database. Credentials are environment variables read 
 | Who | Variables | How to set / change |
 | --- | --- | --- |
 | Dashboard login | `UI_USERNAME` (default `admin`), `UI_PASSWORD` (**required**) | Set in compose, Kubernetes secret, or `-e`. Restart to apply. |
-| Cookie signing | `SESSION_SECRET` | Set a long random string. If unset, derived from the access token + UI password. Changing it signs everyone out. |
+| Cookie signing | `SESSION_SECRET` | Set a long random string. If unset, a random secret is generated and sessions will not survive a restart. Changing it signs everyone out. |
 | Nx CLI (read/write) | `NX_CACHE_ACCESS_TOKEN` | Same value as `NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN` on the Nx client. |
 | Nx CLI (read only) | `NX_CACHE_READ_TOKEN` | Optional. `GET` works, `PUT` returns `403`. |
 
@@ -89,8 +94,9 @@ All settings are environment variables. Also listed in `.env.example`.
 | `NX_CACHE_READ_TOKEN` | empty | Optional read-only bearer token |
 | `UI_USERNAME` | `admin` | Dashboard login |
 | `UI_PASSWORD` | required | Dashboard password |
-| `SESSION_SECRET` | derived | Cookie signing secret |
-| `SESSION_SECURE` | `false` | Set `true` behind HTTPS |
+| `SESSION_SECRET` | random ephemeral | Cookie signing secret. Set this in production. |
+| `SESSION_SECURE` | `true` | Session cookies require HTTPS. Set `false` for local HTTP. |
+| `TRUST_FORWARDED_IP` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` only behind a known proxy. |
 | `AWS_REGION` | `us-east-1` | S3 region |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | default chain | Leave empty to use instance role / IRSA |
 | `S3_BUCKET_NAME` | `nx-cache` | Bucket for artifacts **and** catalog JSON |
@@ -101,13 +107,17 @@ All settings are environment variables. Also listed in `.env.example`.
 | `STORAGE_BACKEND` | `s3` | `s3` or `memory` (dev only, not durable) |
 | `CATALOG_BACKEND` | `s3` | `s3` (same bucket, no extra DB) or `sqlite` |
 | `CATALOG_FLUSH_INTERVAL` | `30s` | How often the in-memory catalog/stats snapshot is written to S3. `0` disables the timer (still flushes on shutdown). |
-| `SQLITE_PATH` | unset | Only used when `CATALOG_BACKEND=sqlite` (then defaults to `data/nx-cache.db`) |
-| `CACHE_TTL` | `120h` | Delete artifacts older than this |
+| `SQLITE_PATH` | unset | Only used when `CATALOG_BACKEND=sqlite` (then defaults to `data/nx-cache.db`; the Docker image sets `/data/nx-cache.db`) |
+| `CACHE_TTL` | `120h` | Delete artifacts whose **create time** is older than this (not last access) |
 | `CLEANUP_INTERVAL` | `1h` | Background cleanup cadence |
 | `CLEANUP_ON_SAVE` | `true` | Also purge expired objects after `PUT` |
 | `MAX_UPLOAD_BYTES` | `2GiB` | Reject larger uploads |
 
 With `CATALOG_BACKEND=s3`, hits/misses and per-hash metadata are kept in memory and flushed as one snapshot to `{S3_PREFIX}.meta/catalog.json` every `CATALOG_FLUSH_INTERVAL` (and again on shutdown). Artifact `PUT`/`GET` still go to S3 immediately.
+
+**Run a single replica** against a given bucket prefix. The snapshot is last-writer-wins; two processes will overwrite each other's counters and task metadata. Use SQLite (local disk) or an external store if you need more than one process.
+
+Dashboard reads come from that in-memory catalog, not a full S3 listing. A background reconcile on startup (and TTL cleanup) still walks the bucket.
 
 ## API
 
@@ -127,9 +137,9 @@ An Nx workspace is **not** required to verify this server. Nx only speaks `PUT` 
 Nx does **not** send the task name on the wire. Each payload is a gzip tar of the local cache dir, including `terminalOutput` (typically `> nx run web:build`). The dashboard parses that (and output paths) to show **Task** and **Kind** (build, test, lint, e2e, typecheck). Optional headers `X-Nx-Project`, `X-Nx-Target`, and `X-Nx-Configuration` override inference if a wrapper sets them.
 
 ```bash
-make test          # unit + HTTP controller tests (in-memory backend)
+make test          # unit + HTTP controller tests with the race detector
 make e2e           # Nx OpenAPI contract against real RustFS
-make screenshots   # Chrome captures of /login and the dashboard → docs/screenshots/
+make screenshots   # Chrome captures of /login and the dashboard → docs/screenshots/ (needs -tags screenshot)
 ```
 
 `make e2e` skips if nothing is listening on `S3_ENDPOINT_URL` (default `http://127.0.0.1:9000`). To fail instead of skip:

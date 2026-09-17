@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -87,7 +88,7 @@ func (m *Memory) Get(_ context.Context, hash string) (io.ReadCloser, int64, erro
 	if !ok {
 		return nil, 0, ErrNotFound
 	}
-	return io.NopCloser(newBytesReader(obj.data)), int64(len(obj.data)), nil
+	return io.NopCloser(bytes.NewReader(obj.data)), int64(len(obj.data)), nil
 }
 
 func (m *Memory) Delete(_ context.Context, hashes []string) error {
@@ -143,20 +144,4 @@ func (m *Memory) DeleteMeta(_ context.Context, keys []string) error {
 
 func (m *Memory) SetTime(t time.Time) {
 	m.now = func() time.Time { return t }
-}
-
-type bytesReader struct {
-	b []byte
-	i int
-}
-
-func newBytesReader(b []byte) *bytesReader { return &bytesReader{b: b} }
-
-func (r *bytesReader) Read(p []byte) (int, error) {
-	if r.i >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.i:])
-	r.i += n
-	return n, nil
 }

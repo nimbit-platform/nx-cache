@@ -18,6 +18,9 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SQLITE_PATH", "")
 	t.Setenv("CATALOG_FLUSH_INTERVAL", "")
 	t.Setenv("CACHE_TTL", "")
+	t.Setenv("SESSION_SECRET", "")
+	t.Setenv("SESSION_SECURE", "")
+	t.Setenv("TRUST_FORWARDED_IP", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +39,15 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.SQLitePath != "" {
 		t.Fatalf("sqlite should be off by default, got %s", cfg.SQLitePath)
+	}
+	if !cfg.SessionSecure {
+		t.Fatal("SESSION_SECURE should default to true")
+	}
+	if cfg.SessionSecret == "" || cfg.SessionSecret == "tok:pw" || !cfg.SessionSecretRandom {
+		t.Fatalf("expected ephemeral session secret, got %q", cfg.SessionSecret)
+	}
+	if cfg.TrustForwardedIP {
+		t.Fatal("must not trust forwarded IP by default")
 	}
 }
 
@@ -65,5 +77,15 @@ func TestLoadSQLiteCatalog(t *testing.T) {
 	}
 	if cfg.CatalogBackend != "sqlite" || cfg.SQLitePath != "data/nx-cache.db" {
 		t.Fatalf("catalog=%s path=%s", cfg.CatalogBackend, cfg.SQLitePath)
+	}
+}
+
+func TestLoadInvalidDuration(t *testing.T) {
+	t.Setenv("NX_CACHE_ACCESS_TOKEN", "tok")
+	t.Setenv("UI_PASSWORD", "pw")
+	t.Setenv("S3_BUCKET_NAME", "bucket")
+	t.Setenv("CACHE_TTL", "120hh")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid CACHE_TTL to fail")
 	}
 }

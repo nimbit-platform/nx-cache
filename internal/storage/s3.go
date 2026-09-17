@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 type S3Config struct {
@@ -91,8 +92,12 @@ func (s *S3) Put(ctx context.Context, hash string, r io.Reader, size int64) erro
 		Body:          counter,
 		ContentLength: aws.Int64(size),
 		ContentType:   aws.String("application/octet-stream"),
+		IfNoneMatch:   aws.String("*"),
 	})
 	if err != nil {
+		if isPreconditionFailed(err) {
+			return ErrExists
+		}
 		return err
 	}
 	if counter.n != size {
@@ -283,10 +288,25 @@ func isNotFound(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
-		case "NotFound", "NoSuchKey", "NoSuchBucket", "404":
+		case "NotFound", "NoSuchKey", "NoSuchBucket":
 			return true
 		}
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "NotFound") || strings.Contains(msg, "404")
+	var respErr *smithyhttp.ResponseError
+	return errors.As(err, &respErr) && respErr.Response != nil && respErr.HTTPStatusCode() == 404
+}
+
+func isPreconditionFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "PreconditionFailed", "412":
+			return true
+		}
+	}
+	var respErr *smithyhttp.ResponseError
+	return errors.As(err, &respErr) && respErr.Response != nil && respErr.HTTPStatusCode() == 412
 }

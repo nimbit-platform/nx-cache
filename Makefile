@@ -10,13 +10,13 @@ tidy:
 	go mod tidy
 
 test: generate
-	go test ./...
+	go test -race ./...
 
 e2e:
 	go test -tags e2e ./e2e/... -count=1 -timeout 3m
 
 screenshots:
-	go run ./cmd/screenshot
+	go run -tags screenshot ./cmd/screenshot
 
 build: generate css
 	go build -o bin/nx-cache ./cmd/server

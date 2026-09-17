@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -25,9 +27,12 @@ type Config struct {
 	AccessToken string
 	ReadToken   string
 
-	UIUsername    string
-	UIPassword    string
-	SessionSecret string
+	UIUsername          string
+	UIPassword          string
+	SessionSecret       string
+	SessionSecretRandom bool
+	SessionSecure       bool
+	TrustForwardedIP    bool
 
 	SQLitePath string
 
@@ -42,6 +47,43 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	forcePath, err := envBool("S3_FORCE_PATH_STYLE", os.Getenv("S3_ENDPOINT_URL") != "")
+	if err != nil {
+		return Config{}, err
+	}
+	createBucket, err := envBool("S3_CREATE_BUCKET", false)
+	if err != nil {
+		return Config{}, err
+	}
+	flush, err := envDuration("CATALOG_FLUSH_INTERVAL", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	ttl, err := envDuration("CACHE_TTL", 5*24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	cleanupEvery, err := envDuration("CLEANUP_INTERVAL", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	cleanupOnSave, err := envBool("CLEANUP_ON_SAVE", true)
+	if err != nil {
+		return Config{}, err
+	}
+	maxUpload, err := envInt64("MAX_UPLOAD_BYTES", 2*1024*1024*1024)
+	if err != nil {
+		return Config{}, err
+	}
+	sessionSecure, err := envBool("SESSION_SECURE", true)
+	if err != nil {
+		return Config{}, err
+	}
+	trustFwd, err := envBool("TRUST_FORWARDED_IP", false)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		Port:               env("PORT", "8080"),
 		LogLevel:           env("LOG_LEVEL", "info"),
@@ -51,21 +93,23 @@ func Load() (Config, error) {
 		S3Bucket:           env("S3_BUCKET_NAME", "nx-cache"),
 		S3Endpoint:         os.Getenv("S3_ENDPOINT_URL"),
 		S3Prefix:           env("S3_PREFIX", "nx-cache/"),
-		S3ForcePathStyle:   envBool("S3_FORCE_PATH_STYLE", os.Getenv("S3_ENDPOINT_URL") != ""),
-		CreateBucket:       envBool("S3_CREATE_BUCKET", false),
+		S3ForcePathStyle:   forcePath,
+		CreateBucket:       createBucket,
 		AccessToken:        env("NX_CACHE_ACCESS_TOKEN", os.Getenv("NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN")),
 		ReadToken:          os.Getenv("NX_CACHE_READ_TOKEN"),
 		UIUsername:         env("UI_USERNAME", "admin"),
 		UIPassword:         os.Getenv("UI_PASSWORD"),
 		SessionSecret:      os.Getenv("SESSION_SECRET"),
+		SessionSecure:      sessionSecure,
+		TrustForwardedIP:   trustFwd,
 		SQLitePath:         os.Getenv("SQLITE_PATH"),
 		StorageBackend:     strings.ToLower(env("STORAGE_BACKEND", "s3")),
 		CatalogBackend:     strings.ToLower(env("CATALOG_BACKEND", "s3")),
-		CatalogFlush:       envDuration("CATALOG_FLUSH_INTERVAL", 30*time.Second),
-		CacheTTL:           envDuration("CACHE_TTL", 5*24*time.Hour),
-		CleanupInterval:    envDuration("CLEANUP_INTERVAL", time.Hour),
-		CleanupOnSave:      envBool("CLEANUP_ON_SAVE", true),
-		MaxUploadBytes:     envInt64("MAX_UPLOAD_BYTES", 2*1024*1024*1024),
+		CatalogFlush:       flush,
+		CacheTTL:           ttl,
+		CleanupInterval:    cleanupEvery,
+		CleanupOnSave:      cleanupOnSave,
+		MaxUploadBytes:     maxUpload,
 	}
 
 	if !strings.HasSuffix(cfg.S3Prefix, "/") && cfg.S3Prefix != "" {
@@ -92,8 +136,13 @@ func Load() (Config, error) {
 	if cfg.UIPassword == "" {
 		return Config{}, fmt.Errorf("UI_PASSWORD is required")
 	}
-	if cfg.SessionSecret == "" {
-		cfg.SessionSecret = cfg.AccessToken + ":" + cfg.UIPassword
+	if strings.TrimSpace(cfg.SessionSecret) == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return Config{}, fmt.Errorf("SESSION_SECRET: %w", err)
+		}
+		cfg.SessionSecret = hex.EncodeToString(buf)
+		cfg.SessionSecretRandom = true
 	}
 	if cfg.CacheTTL <= 0 {
 		return Config{}, fmt.Errorf("CACHE_TTL must be positive")
@@ -111,38 +160,38 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-func envBool(key string, fallback bool) bool {
+func envBool(key string, fallback bool) (bool, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return fallback
+		return false, fmt.Errorf("%s is invalid boolean %q", key, v)
 	}
-	return b
+	return b, nil
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("%s is invalid duration %q", key, v)
 	}
-	return d
+	return d, nil
 }
 
-func envInt64(key string, fallback int64) int64 {
+func envInt64(key string, fallback int64) (int64, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return fallback
+		return fallback, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return fallback
+		return 0, fmt.Errorf("%s is invalid integer %q", key, v)
 	}
-	return n
+	return n, nil
 }

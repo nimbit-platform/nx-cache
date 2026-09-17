@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -17,14 +18,18 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: npm install
+      - run: npm ci
       - run: go install github.com/a-h/templ/cmd/templ@v0.3.943
       - run: templ generate
       - run: npx @tailwindcss/cli -i assets/css/globals.css -o internal/web/static/app.css --minify
-      - run: go test ./...
+      - name: Generated files match sources
+        run: git diff --exit-code
+      - run: go vet ./...
+      - run: go test -race ./...
 
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       rustfs:
         image: rustfs/rustfs:latest
@@ -60,4 +65,4 @@ jobs:
           done
           echo "RustFS did not become ready on :9000"
           exit 1
-      - run: go test -tags e2e ./e2e/... -count=1 -timeout 3m
+      - run: go test -race -tags e2e ./e2e/... -count=1 -timeout 3m

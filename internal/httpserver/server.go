@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/go-chi/chi/v5"
@@ -30,6 +31,7 @@ type Server struct {
 	Sessions *auth.Sessions
 	Log      *slog.Logger
 	Static   fs.FS
+	logins   *loginGate
 }
 
 func (s *Server) Handler() http.Handler {
@@ -41,10 +43,18 @@ func (s *Server) Handler() http.Handler {
 		MaxUpload:     s.Cfg.MaxUploadBytes,
 	}
 
+	if s.logins == nil {
+		s.logins = newLoginGate(5, 30*time.Second)
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	if s.Cfg.TrustForwardedIP {
+		r.Use(middleware.RealIP)
+	}
 	r.Use(middleware.Recoverer)
+	r.Use(securityHeaders)
+	r.Use(requestTimeout(30 * time.Second))
 	r.Use(middleware.Logger)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -113,6 +123,11 @@ func (s *Server) loginGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r, s.Cfg.TrustForwardedIP)
+	if s.logins != nil && !s.logins.allow(ip) {
+		s.render(w, r, http.StatusTooManyRequests, web.LoginPage(web.LoginData{Error: "Too many attempts, try again later"}))
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		s.render(w, r, http.StatusBadRequest, web.LoginPage(web.LoginData{Error: "Invalid form"}))
 		return
@@ -120,11 +135,17 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 	user := r.FormValue("username")
 	pass := r.FormValue("password")
 	if user != s.Cfg.UIUsername || !auth.CheckPassword(pass, s.Cfg.UIPassword) {
+		if s.logins != nil {
+			s.logins.failure(ip)
+		}
 		s.render(w, r, http.StatusUnauthorized, web.LoginPage(web.LoginData{
 			Username: user,
 			Error:    "Invalid username or password",
 		}))
 		return
+	}
+	if s.logins != nil {
+		s.logins.success(ip)
 	}
 	s.Sessions.SetCookie(w, user)
 	http.Redirect(w, r, "/", http.StatusSeeOther)

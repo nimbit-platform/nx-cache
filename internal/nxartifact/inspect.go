@@ -16,12 +16,17 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
 
-const maxTerminalBytes = 64 * 1024
+const (
+	maxTerminalBytes = 64 * 1024
+	maxInspectBytes  = 8 << 20 // decompressed gzip/tar scanned for metadata
+	maxTarEntries    = 4000
+	maxInspectPaths  = 256
+)
 
 var (
-	ansiRe       = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	nxRunRe      = regexp.MustCompile(`(?i)(?:^|\n)\s*>\s*nx(?:\.exe)?\s+run\s+(\S+)`)
-	nxTargetRe   = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
+	ansiRe     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	nxRunRe    = regexp.MustCompile(`(?i)(?:^|\n)\s*>\s*nx(?:\.exe)?\s+run\s+(\S+)`)
+	nxTargetRe = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
 )
 
 // Inspect reads an Nx remote-cache payload (gzip tar, as produced by HttpRemoteCache)
@@ -45,17 +50,18 @@ func inspect(r io.Reader) (store.TaskInfo, error) {
 		src = gz
 	}
 
+	src = io.LimitReader(src, maxInspectBytes)
 	tr := tar.NewReader(src)
 	var info store.TaskInfo
 	var terminal string
 	var paths []string
-	for {
+	foundTerminal := false
+	for i := 0; i < maxTarEntries; i++ {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			_, _ = io.Copy(io.Discard, src)
 			return finalize(info, terminal, paths), err
 		}
 		name := strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(hdr.Name, "\\", "/")), "/")
@@ -64,20 +70,21 @@ func inspect(r io.Reader) (store.TaskInfo, error) {
 		case base == "terminalOutput" || name == "terminalOutput":
 			var buf bytes.Buffer
 			_, _ = io.CopyN(&buf, tr, maxTerminalBytes)
-			_, _ = io.Copy(io.Discard, tr)
+			_, _ = io.Copy(io.Discard, io.LimitReader(tr, maxTerminalBytes))
 			terminal = buf.String()
+			foundTerminal = true
 		case base == "code" || name == "code" || base == "source":
-			_, _ = io.Copy(io.Discard, tr)
+			_, _ = io.Copy(io.Discard, io.LimitReader(tr, 64))
 		default:
-			if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeDir {
-				if name != "" && name != "." {
-					paths = append(paths, name)
-				}
+			if (hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeDir) && name != "" && name != "." && len(paths) < maxInspectPaths {
+				paths = append(paths, name)
 			}
-			_, _ = io.Copy(io.Discard, tr)
+			_, _ = io.Copy(io.Discard, io.LimitReader(tr, 1<<20))
+		}
+		if foundTerminal {
+			break
 		}
 	}
-	_, _ = io.Copy(io.Discard, src)
 	return finalize(info, terminal, paths), nil
 }
 
@@ -149,21 +156,22 @@ func KindFromTarget(target string) string {
 }
 
 func KindFromPaths(paths []string) string {
-	joined := strings.ToLower(strings.Join(paths, "\n"))
-	switch {
-	case strings.Contains(joined, "coverage") || strings.Contains(joined, "jest") || strings.Contains(joined, "vitest"):
-		return "test"
-	case strings.Contains(joined, "eslint") || strings.Contains(joined, ".eslintcache"):
-		return "lint"
-	case strings.Contains(joined, "playwright") || strings.Contains(joined, "cypress"):
-		return "e2e"
-	case strings.Contains(joined, "/dist/") || strings.HasPrefix(joined, "dist/") ||
-		strings.Contains(joined, "/.next/") || strings.Contains(joined, "/build/") ||
-		strings.Contains(joined, "outputs/dist"):
-		return "build"
-	default:
-		return ""
+	for _, p := range paths {
+		l := strings.ToLower(p)
+		switch {
+		case strings.Contains(l, "coverage") || strings.Contains(l, "jest") || strings.Contains(l, "vitest"):
+			return "test"
+		case strings.Contains(l, "eslint") || strings.Contains(l, ".eslintcache"):
+			return "lint"
+		case strings.Contains(l, "playwright") || strings.Contains(l, "cypress"):
+			return "e2e"
+		case strings.Contains(l, "/dist/") || strings.HasPrefix(l, "dist/") ||
+			strings.Contains(l, "/.next/") || strings.Contains(l, "/build/") ||
+			strings.Contains(l, "outputs/dist"):
+			return "build"
+		}
 	}
+	return ""
 }
 
 // Pack builds a gzip tar in the layout Nx HttpRemoteCache uploads:

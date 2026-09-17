@@ -1,8 +1,11 @@
 package nxartifact
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"net/http"
+	"strconv"
 	"testing"
 )
 
@@ -53,6 +56,32 @@ func TestInspectRunningTargetLineAndTestPaths(t *testing.T) {
 	info := Inspect(bytes.NewReader(payload))
 	if info.Project != "api" || info.Target != "test" || info.Kind != "test" {
 		t.Fatalf("%+v", info)
+	}
+}
+
+func TestInspectCapsTarBomb(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	const n = 8000
+	for i := 0; i < n; i++ {
+		name := "f" + strconv.Itoa(i)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	info := Inspect(bytes.NewReader(buf.Bytes()))
+	if !info.Empty() {
+		t.Fatalf("bomb should not invent a task: %+v", info)
 	}
 }
 

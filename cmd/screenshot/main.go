@@ -1,3 +1,5 @@
+//go:build screenshot
+
 package main
 
 import (

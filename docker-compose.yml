@@ -12,8 +12,8 @@ services:
       RUSTFS_VOLUMES: /data
       RUSTFS_OBS_LOGGER_LEVEL: error
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - rustfs-data:/data
 
@@ -21,13 +21,14 @@ services:
     build: .
     image: ghcr.io/nimbit-platform/nx-cache:local
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       PORT: "8080"
-      NX_CACHE_ACCESS_TOKEN: ${NX_CACHE_ACCESS_TOKEN:-dev-token}
+      NX_CACHE_ACCESS_TOKEN: ${NX_CACHE_ACCESS_TOKEN:?set NX_CACHE_ACCESS_TOKEN in .env}
       UI_USERNAME: ${UI_USERNAME:-admin}
-      UI_PASSWORD: ${UI_PASSWORD:-admin}
-      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret}
+      UI_PASSWORD: ${UI_PASSWORD:?set UI_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      SESSION_SECURE: "false"
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: nxcache
       AWS_SECRET_ACCESS_KEY: nxcache-e2e-secret-key

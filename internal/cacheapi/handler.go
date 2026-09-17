@@ -17,7 +17,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/store"
 )
 
-var hashPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var hashPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Handler struct {
 	Backend       storage.Backend
@@ -77,6 +77,10 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			_ = recover()
+			_ = pr.CloseWithError(io.EOF)
+		}()
 		inspected = nxartifact.Inspect(pr)
 		_, _ = io.Copy(io.Discard, pr)
 	}()
@@ -98,6 +102,10 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.UpsertEntry(r.Context(), hash, size, h.now(), nxartifact.Merge(headerInfo, inspected)); err != nil {
+		slog.Error("catalog upsert failed after put", "hash", hash, "err", err)
+		if delErr := h.Backend.Delete(r.Context(), []string{hash}); delErr != nil {
+			slog.Error("failed to roll back cache object after catalog error", "hash", hash, "err", delErr)
+		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

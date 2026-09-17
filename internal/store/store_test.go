@@ -159,3 +159,63 @@ func TestObjectCatalogFlushInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type errMeta struct {
+	storage.Backend
+	getErr error
+	lists  int
+}
+
+func (e *errMeta) GetMeta(ctx context.Context, key string) ([]byte, error) {
+	if e.getErr != nil {
+		return nil, e.getErr
+	}
+	return e.Backend.GetMeta(ctx, key)
+}
+
+func (e *errMeta) List(ctx context.Context) ([]storage.Object, error) {
+	e.lists++
+	return e.Backend.List(ctx)
+}
+
+func TestObjectFlushBlockedAfterLoadError(t *testing.T) {
+	mem := storage.NewMemory()
+	ctx := context.Background()
+	backend := &errMeta{Backend: mem, getErr: errors.New("s3 timeout")}
+	cat := NewObject(backend)
+	if err := cat.Load(ctx); err == nil {
+		t.Fatal("expected load error")
+	}
+	if err := cat.UpsertEntry(ctx, "aaa", 3, time.Now(), TaskInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.Flush(ctx); !errors.Is(err, ErrCatalogLoadFailed) {
+		t.Fatalf("flush: %v", err)
+	}
+	if _, err := mem.GetMeta(ctx, catalogMetaKey); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatal("must not overwrite a snapshot after a failed load")
+	}
+}
+
+func TestObjectListUsesMemoryNotBucketList(t *testing.T) {
+	mem := storage.NewMemory()
+	ctx := context.Background()
+	backend := &errMeta{Backend: mem}
+	cat := NewObject(backend)
+	if err := mem.Put(ctx, "only-in-s3", strings.NewReader("hello"), 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertEntry(ctx, "in-catalog", 4, time.Now(), TaskInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	entries, total, err := cat.List(ctx, "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || entries[0].Hash != "in-catalog" {
+		t.Fatalf("%d %+v", total, entries)
+	}
+	if backend.lists != 0 {
+		t.Fatalf("dashboard list must not List the bucket, got %d", backend.lists)
+	}
+}

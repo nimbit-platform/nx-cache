@@ -209,6 +209,37 @@ func TestUIRequiresLogin(t *testing.T) {
 	}
 }
 
+func TestLoginRateLimit(t *testing.T) {
+	s, _, _, _ := testServer(t)
+	s.logins = newLoginGate(3, time.Hour)
+	h := s.Handler()
+	for i := 0; i < 3; i++ {
+		rec := do(h, http.MethodPost, "/login", "", []byte("username=admin&password=wrong"), map[string]string{
+			"Content-Type": "application/x-www-form-urlencoded",
+		})
+		if rec.Code != 401 {
+			t.Fatalf("attempt %d: %d", i, rec.Code)
+		}
+	}
+	rec := do(h, http.MethodPost, "/login", "", []byte("username=admin&password=wrong"), map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded",
+	})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	_, h, _, _ := testServer(t)
+	rec := do(h, http.MethodGet, "/health", "", nil, nil)
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("headers %v", rec.Header())
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatal(rec.Header().Get("X-Frame-Options"))
+	}
+}
+
 func TestHeadInvalidHashAndTooLarge(t *testing.T) {
 	_, h, _, _ := testServer(t)
 	payload := []byte("nx-artifact")
