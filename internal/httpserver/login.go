@@ -2,23 +2,26 @@ package httpserver
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
 
+const loginGateMaxMap = 10_000
+
 type loginGate struct {
 	mu       sync.Mutex
 	byIP     map[string]*loginAttempt
 	maxFails int
 	lockFor  time.Duration
+	maxMap   int
 }
 
 type loginAttempt struct {
 	fails int
 	until time.Time
+	seen  time.Time
 }
 
 func newLoginGate(maxFails int, lockFor time.Duration) *loginGate {
@@ -28,7 +31,7 @@ func newLoginGate(maxFails int, lockFor time.Duration) *loginGate {
 	if lockFor <= 0 {
 		lockFor = 30 * time.Second
 	}
-	return &loginGate{byIP: map[string]*loginAttempt{}, maxFails: maxFails, lockFor: lockFor}
+	return &loginGate{byIP: map[string]*loginAttempt{}, maxFails: maxFails, lockFor: lockFor, maxMap: loginGateMaxMap}
 }
 
 func (g *loginGate) allow(ip string) bool {
@@ -42,6 +45,7 @@ func (g *loginGate) allow(ip string) bool {
 	if st == nil {
 		return true
 	}
+	st.seen = now
 	if now.After(st.until) {
 		return true
 	}
@@ -64,8 +68,21 @@ func (g *loginGate) failure(ip string) {
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	limit := g.maxMap
+	if limit < 1 {
+		limit = loginGateMaxMap
+	}
+	if len(g.byIP) >= limit {
+		g.gcLocked(now)
+	}
 	st := g.byIP[ip]
 	if st == nil {
+		if len(g.byIP) >= limit {
+			g.gcLocked(now)
+			if len(g.byIP) >= limit {
+				g.dropLocked(limit / 2)
+			}
+		}
 		st = &loginAttempt{}
 		g.byIP[ip] = st
 	}
@@ -73,25 +90,31 @@ func (g *loginGate) failure(ip string) {
 		st.fails = 0
 	}
 	st.fails++
+	st.seen = now
 	if st.fails >= g.maxFails {
 		st.until = now.Add(g.lockFor)
 	}
 }
 
-func clientIP(r *http.Request, trustForwarded bool) string {
-	if trustForwarded {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return strings.TrimSpace(strings.Split(xff, ",")[0])
-		}
-		if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
-			return xr
+func (g *loginGate) gcLocked(now time.Time) {
+	idle := g.lockFor
+	if idle < time.Minute {
+		idle = time.Minute
+	}
+	for ip, st := range g.byIP {
+		if now.After(st.until) && now.Sub(st.seen) > idle {
+			delete(g.byIP, ip)
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+}
+
+func (g *loginGate) dropLocked(keep int) {
+	for ip := range g.byIP {
+		if len(g.byIP) <= keep {
+			return
+		}
+		delete(g.byIP, ip)
 	}
-	return host
 }
 
 func securityHeaders(next http.Handler) http.Handler {

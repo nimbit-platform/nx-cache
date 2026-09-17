@@ -53,6 +53,9 @@ func (l *ipLimiter) allow(ip string) bool {
 		b.last = now
 	}
 	if b.tokens < 1 {
+		if len(l.byIP) > 10_000 {
+			l.gcLocked(now)
+		}
 		return false
 	}
 	b.tokens--
@@ -92,7 +95,7 @@ func (s *Server) allowlist(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ip := clientIP(r, s.Cfg.TrustForwardedIP)
+		ip := s.clientIP(r)
 		if !ipAllowed(s.Cfg.AllowNets, ip) {
 			s.logger().Warn("ip not allowed", "ip", ip, "path", r.URL.Path)
 			http.Error(w, "Forbidden", http.StatusForbidden)
@@ -109,7 +112,7 @@ func (s *Server) rateLimit(lim *ipLimiter) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			ip := clientIP(r, s.Cfg.TrustForwardedIP)
+			ip := s.clientIP(r)
 			if !lim.allow(ip) {
 				s.logger().Warn("rate limited", "ip", ip, "path", r.URL.Path)
 				w.Header().Set("Retry-After", "1")

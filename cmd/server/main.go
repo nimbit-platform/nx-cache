@@ -159,6 +159,9 @@ func main() {
 	if cfg.SessionSecretRandom {
 		log.Warn("SESSION_SECRET was unset; generated an ephemeral secret (sessions will not survive restart)")
 	}
+	if cfg.TrustForwardedIP {
+		log.Info("trusting forwarded client IP", "trusted_proxy_cidrs", len(cfg.TrustedProxyNets))
+	}
 	if len(cfg.AllowNets) > 0 {
 		log.Info("IP allow list enabled", "entries", len(cfg.AllowNets))
 	}

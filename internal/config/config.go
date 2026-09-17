@@ -35,6 +35,7 @@ type Config struct {
 	SessionSecretRandom bool
 	SessionSecure       bool
 	TrustForwardedIP    bool
+	TrustedProxyNets    []*net.IPNet
 	AllowNets           []*net.IPNet
 	RateLimitRPS        float64
 	RateLimitBurst      int
@@ -102,9 +103,16 @@ func Load() (Config, error) {
 	if rateBurst < 0 {
 		return Config{}, fmt.Errorf("RATE_LIMIT_BURST cannot be negative")
 	}
-	allowNets, err := ParseIPNets(os.Getenv("ALLOW_IPS"))
+	allowNets, err := parseIPNets("ALLOW_IPS", os.Getenv("ALLOW_IPS"))
 	if err != nil {
 		return Config{}, err
+	}
+	trustedProxies, err := parseIPNets("TRUSTED_PROXY_CIDRS", os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return Config{}, err
+	}
+	if trustFwd && len(trustedProxies) == 0 {
+		return Config{}, fmt.Errorf("TRUSTED_PROXY_CIDRS is required when TRUST_FORWARDED_IP is true")
 	}
 
 	logLevel, err := parseLogLevel(env("LOG_LEVEL", "info"))
@@ -131,6 +139,7 @@ func Load() (Config, error) {
 		SessionSecret:      os.Getenv("SESSION_SECRET"),
 		SessionSecure:      sessionSecure,
 		TrustForwardedIP:   trustFwd,
+		TrustedProxyNets:   trustedProxies,
 		AllowNets:          allowNets,
 		RateLimitRPS:       rateRPS,
 		RateLimitBurst:     int(rateBurst),
@@ -261,6 +270,10 @@ func envFloat64(key string, fallback float64) (float64, error) {
 // ParseIPNets parses a comma-separated list of IPs or CIDRs.
 // A bare address becomes a single-host prefix (/32 or /128).
 func ParseIPNets(s string) ([]*net.IPNet, error) {
+	return parseIPNets("ALLOW_IPS", s)
+}
+
+func parseIPNets(field, s string) ([]*net.IPNet, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil
@@ -274,14 +287,14 @@ func ParseIPNets(s string) ([]*net.IPNet, error) {
 		if strings.Contains(part, "/") {
 			_, n, err := net.ParseCIDR(part)
 			if err != nil {
-				return nil, fmt.Errorf("ALLOW_IPS: invalid CIDR %q", part)
+				return nil, fmt.Errorf("%s: invalid CIDR %q", field, part)
 			}
 			out = append(out, n)
 			continue
 		}
 		ip := net.ParseIP(part)
 		if ip == nil {
-			return nil, fmt.Errorf("ALLOW_IPS: invalid IP %q", part)
+			return nil, fmt.Errorf("%s: invalid IP %q", field, part)
 		}
 		if v4 := ip.To4(); v4 != nil {
 			out = append(out, &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)})

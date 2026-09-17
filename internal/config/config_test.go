@@ -22,6 +22,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "")
 	t.Setenv("SESSION_SECURE", "")
 	t.Setenv("TRUST_FORWARDED_IP", "")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("ALLOW_IPS", "")
 	t.Setenv("RATE_LIMIT_RPS", "")
 	t.Setenv("RATE_LIMIT_BURST", "")
@@ -59,6 +60,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TrustForwardedIP {
 		t.Fatal("must not trust forwarded IP by default")
+	}
+	if len(cfg.TrustedProxyNets) != 0 {
+		t.Fatal("trusted proxies should be empty by default")
 	}
 	if len(cfg.AllowNets) != 0 || cfg.RateLimitRPS != 0 {
 		t.Fatal("access controls should be off by default")
@@ -135,6 +139,25 @@ func TestParseIPNets(t *testing.T) {
 	}
 	if _, err := ParseIPNets("not-an-ip"); err == nil {
 		t.Fatal("expected invalid IP")
+	}
+}
+
+func TestLoadForwardedIPRequiresTrustedProxies(t *testing.T) {
+	t.Setenv("NX_CACHE_ACCESS_TOKEN", "tok")
+	t.Setenv("UI_PASSWORD", "pw")
+	t.Setenv("S3_BUCKET_NAME", "bucket")
+	t.Setenv("TRUST_FORWARDED_IP", "true")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected TRUSTED_PROXY_CIDRS to be required")
+	}
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.1/32")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TrustForwardedIP || len(cfg.TrustedProxyNets) != 1 {
+		t.Fatalf("%+v", cfg)
 	}
 }
 

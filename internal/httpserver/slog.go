@@ -25,7 +25,7 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		log := s.logger().With(
 			"request_id", middleware.GetReqID(r.Context()),
-			"ip", clientIP(r, s.Cfg.TrustForwardedIP),
+			"ip", s.clientIP(r),
 			"method", r.Method,
 			"path", r.URL.Path,
 		)

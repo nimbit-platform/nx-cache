@@ -50,9 +50,6 @@ func (s *Server) Handler() http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	if s.Cfg.TrustForwardedIP {
-		r.Use(middleware.RealIP)
-	}
 	r.Use(s.requestLog)
 	r.Use(s.recoverer)
 	r.Use(securityHeaders)
@@ -126,7 +123,7 @@ func (s *Server) loginGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r, s.Cfg.TrustForwardedIP)
+	ip := s.clientIP(r)
 	if s.logins != nil && !s.logins.allow(ip) {
 		s.logger().Warn("login locked out", "ip", ip)
 		s.render(w, r, http.StatusTooManyRequests, web.LoginPage(web.LoginData{Error: "Too many attempts, try again later"}))

@@ -97,9 +97,10 @@ All settings are environment variables. Also listed in `.env.example`.
 | `UI_PASSWORD` | required | Dashboard password |
 | `SESSION_SECRET` | random ephemeral | Cookie signing secret. Set this in production. |
 | `SESSION_SECURE` | `true` | Session cookies require HTTPS. Set `false` for local HTTP. |
-| `TRUST_FORWARDED_IP` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` only behind a known proxy. |
-| `ALLOW_IPS` | empty | Optional comma-separated IPs/CIDRs (for example `10.0.0.0/8,192.168.1.4`). Empty = any client. `/health` is always allowed. |
-| `RATE_LIMIT_RPS` | `0` | Per-IP request rate (token bucket). `0` disables. `/health` is not limited. |
+| `TRUST_FORWARDED_IP` | `false` | Use `X-Forwarded-For` / `X-Real-IP` only when the TCP peer is in `TRUSTED_PROXY_CIDRS`. Leftmost (client-supplied) XFF values are ignored. |
+| `TRUSTED_PROXY_CIDRS` | empty | Required when `TRUST_FORWARDED_IP=true`. Comma-separated proxy IPs/CIDRs. Hops are walked **right-to-left**; the first address not in this set is the client. |
+| `ALLOW_IPS` | empty | Optional comma-separated client IPs/CIDRs (for example `10.0.0.0/8,192.168.1.4`). Empty = any client. `/health` is always allowed. |
+| `RATE_LIMIT_RPS` | `0` | Per-IP request rate (token bucket) for the whole server, including `/v1/cache/*`. `0` disables. `/health` is not limited. CI fleets behind one NAT share a bucket. |
 | `RATE_LIMIT_BURST` | `0` | Extra tokens above `RATE_LIMIT_RPS`. Defaults to the RPS value when unset. |
 | `AWS_REGION` | `us-east-1` | S3 region |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | default chain | Leave empty to use instance role / IRSA |

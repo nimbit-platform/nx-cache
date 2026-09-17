@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -291,6 +292,36 @@ func TestLoginRateLimit(t *testing.T) {
 	})
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+}
+
+func TestLoginGateEvictsIdleEntries(t *testing.T) {
+	g := newLoginGate(5, time.Second)
+	g.maxMap = 50
+	now := time.Now()
+	g.mu.Lock()
+	for i := 0; i < 80; i++ {
+		ip := net.IPv4(10, byte(i/256), byte(i%256), 1).String()
+		g.byIP[ip] = &loginAttempt{fails: 1, seen: now.Add(-time.Hour), until: now.Add(-time.Minute)}
+	}
+	if len(g.byIP) != 80 {
+		t.Fatalf("seed %d", len(g.byIP))
+	}
+	g.gcLocked(now)
+	n := len(g.byIP)
+	g.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("gc left %d entries", n)
+	}
+
+	for i := 0; i < 80; i++ {
+		g.failure("203.0.113." + strconv.Itoa(i%200+1))
+	}
+	g.mu.Lock()
+	n = len(g.byIP)
+	g.mu.Unlock()
+	if n > g.maxMap {
+		t.Fatalf("map grew to %d, cap %d", n, g.maxMap)
 	}
 }
 
