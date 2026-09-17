@@ -170,7 +170,9 @@ The container is published to **this repository’s GitHub Packages** (GitHub Co
 Public packages are free. The workflow marks the package public after each push. `latest` is only moved on `main`; `v*` tags publish semver; same-repo PRs publish `sha-*` and `pr-*` tags.
 
 - `test` workflow: unit tests and RustFS e2e on push and pull request
-- `image` workflow: builds `linux/amd64` and `linux/arm64`, then pushes to that package
+- `image` workflow: multi-arch (`linux/amd64`, `linux/arm64`) scratch image, GitHub Actions layer cache, then push to that package
+
+The runtime image is `scratch` (static binary, CA certs, zoneinfo). Builds compile CSS and Go on the builder CPU and cross-compile to the target arch so arm64 is not QEMU’d. `HEALTHCHECK` runs `nx-cache healthcheck`.
 
 Pull (no login when the package is public):
 

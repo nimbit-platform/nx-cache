@@ -22,4 +22,4 @@ build: generate css
 	go build -o bin/nx-cache ./cmd/server
 
 docker:
-	docker build -t nx-cache:local .
+	DOCKER_BUILDKIT=1 docker build -t nx-cache:local .

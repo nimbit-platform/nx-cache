@@ -69,8 +69,11 @@ jobs:
           push: ${{ steps.publish.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          provenance: false
+          cache-from: |
+            type=gha,scope=nx-cache-refs/heads/main
+            type=gha,scope=nx-cache-${{ github.ref }}
+          cache-to: type=gha,scope=nx-cache-${{ github.ref }},mode=max
 
       - name: Make GitHub Package public
         if: steps.publish.outputs.push == 'true'
