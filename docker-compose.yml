@@ -1,5 +1,6 @@
 services:
   rustfs:
+    # Empty store on first boot; cache creates S3_BUCKET_NAME via S3_CREATE_BUCKET.
     image: rustfs/rustfs:latest
     command: ["/data"]
     environment:

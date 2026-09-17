@@ -45,6 +45,8 @@ docker run --rm -p 8080:8080 \
 
 Local RustFS stack:
 
+RustFS starts with no buckets. You do **not** need a separate create-bucket image or init container: compose sets `S3_CREATE_BUCKET=true`, and the cache process creates `S3_BUCKET_NAME` on boot (`HeadBucket` then `CreateBucket`). The e2e suite does the same via `EnsureBucket`.
+
 ```bash
 UI_PASSWORD=choose-a-password docker compose up --build
 ```

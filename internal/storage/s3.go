@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -54,6 +55,10 @@ func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
 			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		}
 		o.UsePathStyle = cfg.ForcePathStyle
+		// Cache PUTs stream the HTTP body (and a tee for task-name inspect). That
+		// reader is not seekable; SigV4 payload hashing would 500 with
+		// "failed to seek body to start". UNSIGNED-PAYLOAD is valid for PutObject.
+		o.APIOptions = append(o.APIOptions, v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
 	})
 	prefix := cfg.Prefix
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
