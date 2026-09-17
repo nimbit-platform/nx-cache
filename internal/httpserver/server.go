@@ -53,12 +53,12 @@ func (s *Server) Handler() http.Handler {
 	if s.Cfg.TrustForwardedIP {
 		r.Use(middleware.RealIP)
 	}
-	r.Use(middleware.Recoverer)
+	r.Use(s.requestLog)
+	r.Use(s.recoverer)
 	r.Use(securityHeaders)
 	r.Use(s.allowlist)
 	r.Use(s.rateLimit(newIPLimiter(s.Cfg.RateLimitRPS, s.Cfg.RateLimitBurst)))
 	r.Use(requestTimeout(30 * time.Second))
-	r.Use(s.requestLog)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

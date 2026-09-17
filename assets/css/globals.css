@@ -1,9 +1,10 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "./tw-animate.css";
 @import "./shadcn-tailwind.css";
 
 @source "../../components/**/*.templ";
 @source "../../internal/web/**/*.templ";
+@source "../../internal/web/models.go";
 
 @custom-variant dark (&:is(.dark *));
 

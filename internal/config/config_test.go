@@ -54,6 +54,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogFormat != "text" {
 		t.Fatalf("log format %s", cfg.LogFormat)
 	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("log level %s", cfg.LogLevel)
+	}
 	if cfg.TrustForwardedIP {
 		t.Fatal("must not trust forwarded IP by default")
 	}
@@ -88,6 +91,24 @@ func TestLoadSQLiteCatalog(t *testing.T) {
 	}
 	if cfg.CatalogBackend != "sqlite" || cfg.SQLitePath != "data/nx-cache.db" {
 		t.Fatalf("catalog=%s path=%s", cfg.CatalogBackend, cfg.SQLitePath)
+	}
+}
+
+func TestLoadInvalidLogLevel(t *testing.T) {
+	t.Setenv("NX_CACHE_ACCESS_TOKEN", "tok")
+	t.Setenv("UI_PASSWORD", "pw")
+	t.Setenv("S3_BUCKET_NAME", "bucket")
+	t.Setenv("LOG_LEVEL", "verbose")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid LOG_LEVEL to fail")
+	}
+	t.Setenv("LOG_LEVEL", "DEBUG")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("level %s", cfg.LogLevel)
 	}
 }
 

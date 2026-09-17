@@ -89,8 +89,8 @@ All settings are environment variables. Also listed in `.env.example`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `8080` | Listen port |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `text` | `text` or `json` (structured `slog`) |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` (`warning` is accepted as `warn`) |
+| `LOG_FORMAT` | `text` | `text` or `json` (structured `log/slog`; JSON recommended in production) |
 | `NX_CACHE_ACCESS_TOKEN` | required | Bearer token for Nx (read + write) |
 | `NX_CACHE_READ_TOKEN` | empty | Optional read-only bearer token |
 | `UI_USERNAME` | `admin` | Dashboard login |

@@ -94,6 +94,47 @@ func TestRequestLogUsesSlog(t *testing.T) {
 	if strings.Contains(buf.String(), `"msg":"http"`) {
 		t.Fatalf("health should be debug-only, got %s", buf.String())
 	}
+
+	nets, err := config.ParseIPNets("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Cfg.AllowNets = nets
+	h = s.Handler()
+	buf.Reset()
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.RemoteAddr = "8.8.8.8:9"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("denied: %d", rec.Code)
+	}
+	out = buf.String()
+	if !strings.Contains(out, `"msg":"http"`) || !strings.Contains(out, `"status":403`) {
+		t.Fatalf("allow list should be in access log: %s", out)
+	}
+}
+
+func TestRecovererLogsPanic(t *testing.T) {
+	s, _, _, _ := testServer(t)
+	var buf bytes.Buffer
+	s.Log = slog.New(slog.NewJSONHandler(&buf, nil))
+	h := s.requestLog(s.recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})))
+	req := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d", rec.Code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"msg":"panic"`) || !strings.Contains(out, "boom") {
+		t.Fatalf("panic log: %s", out)
+	}
+	if !strings.Contains(out, `"msg":"http"`) || !strings.Contains(out, `"status":500`) {
+		t.Fatalf("access log after panic: %s", out)
+	}
 }
 
 func TestPutGetAuthAndHits(t *testing.T) {

@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/nimbit-platform/nx-cache/internal/applog"
 	"github.com/nimbit-platform/nx-cache/internal/auth"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
@@ -30,23 +30,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	level := slog.LevelInfo
-	switch strings.ToLower(cfg.LogLevel) {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
+	level, err := applog.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		slog.Error("invalid configuration", "err", err)
+		os.Exit(1)
 	}
-	opts := &slog.HandlerOptions{Level: level, AddSource: level <= slog.LevelDebug}
-	var handler slog.Handler
-	if cfg.LogFormat == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	}
-	log := slog.New(handler)
+	log := applog.New(os.Stdout, level, cfg.LogFormat)
 	slog.SetDefault(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -198,6 +187,8 @@ func main() {
 			"addr", httpSrv.Addr,
 			"bucket", cfg.S3Bucket,
 			"ttl", cfg.CacheTTL.String(),
+			"log_level", cfg.LogLevel,
+			"log_format", cfg.LogFormat,
 		)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("server", "err", err)

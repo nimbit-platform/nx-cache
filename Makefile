@@ -3,7 +3,7 @@
 generate:
 	templ generate
 
-css:
+css: generate
 	npx @tailwindcss/cli -i assets/css/globals.css -o internal/web/static/app.css --minify
 
 tidy:

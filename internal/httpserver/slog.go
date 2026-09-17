@@ -1,8 +1,10 @@
 package httpserver
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -46,5 +48,25 @@ func (s *Server) requestLog(next http.Handler) http.Handler {
 		default:
 			log.Info("http", attrs...)
 		}
+	})
+}
+
+func (s *Server) recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			v := recover()
+			if v == nil {
+				return
+			}
+			if v == http.ErrAbortHandler {
+				panic(v)
+			}
+			reqlog.FromOr(r.Context(), s.logger()).Error("panic",
+				"err", fmt.Sprint(v),
+				"stack", string(debug.Stack()),
+			)
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}()
+		next.ServeHTTP(w, r)
 	})
 }

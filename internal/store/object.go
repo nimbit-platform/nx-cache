@@ -118,7 +118,9 @@ func (o *Object) Start(ctx context.Context) {
 			case <-t.C:
 				if err := o.Flush(context.WithoutCancel(ctx)); err != nil {
 					o.log.Error("catalog flush failed", "err", err)
+					continue
 				}
+				o.log.Debug("catalog flushed")
 			}
 		}
 	}()

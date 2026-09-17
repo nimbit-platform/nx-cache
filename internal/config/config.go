@@ -107,9 +107,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	logLevel, err := parseLogLevel(env("LOG_LEVEL", "info"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		Port:               env("PORT", "8080"),
-		LogLevel:           env("LOG_LEVEL", "info"),
+		LogLevel:           logLevel,
 		LogFormat:          strings.ToLower(env("LOG_FORMAT", "text")),
 		AWSRegion:          env("AWS_REGION", "us-east-1"),
 		AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -181,6 +186,21 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("LOG_FORMAT must be text or json")
 	}
 	return cfg, nil
+}
+
+func parseLogLevel(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "info":
+		return "info", nil
+	case "debug":
+		return "debug", nil
+	case "warn", "warning":
+		return "warn", nil
+	case "error":
+		return "error", nil
+	default:
+		return "", fmt.Errorf("LOG_LEVEL must be debug, info, warn, or error")
+	}
 }
 
 func env(key, fallback string) string {
