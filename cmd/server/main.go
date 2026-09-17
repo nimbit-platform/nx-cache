@@ -1,0 +1,153 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/nimbit-platform/nx-cache/internal/auth"
+	"github.com/nimbit-platform/nx-cache/internal/cleanup"
+	"github.com/nimbit-platform/nx-cache/internal/config"
+	"github.com/nimbit-platform/nx-cache/internal/httpserver"
+	"github.com/nimbit-platform/nx-cache/internal/storage"
+	"github.com/nimbit-platform/nx-cache/internal/store"
+	"github.com/nimbit-platform/nx-cache/internal/web"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("invalid configuration", "err", err)
+		os.Exit(1)
+	}
+
+	level := slog.LevelInfo
+	switch strings.ToLower(cfg.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(log)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	var backend storage.Backend
+	if cfg.StorageBackend == "memory" {
+		backend = storage.NewMemory()
+		log.Warn("using in-memory storage; artifacts will not persist")
+	} else {
+		s3, err := storage.NewS3(ctx, storage.S3Config{
+			Region:          cfg.AWSRegion,
+			AccessKeyID:     cfg.AWSAccessKeyID,
+			SecretAccessKey: cfg.AWSSecretAccessKey,
+			Bucket:          cfg.S3Bucket,
+			Endpoint:        cfg.S3Endpoint,
+			Prefix:          cfg.S3Prefix,
+			ForcePathStyle:  cfg.S3ForcePathStyle,
+		})
+		if err != nil {
+			log.Error("s3 client", "err", err)
+			os.Exit(1)
+		}
+		if cfg.CreateBucket {
+			var last error
+			for i := 0; i < 12; i++ {
+				last = s3.EnsureBucket(ctx)
+				if last == nil {
+					break
+				}
+				log.Warn("waiting for bucket", "err", last)
+				time.Sleep(time.Second)
+			}
+			if last != nil {
+				log.Error("ensure bucket", "err", last)
+				os.Exit(1)
+			}
+		}
+		backend = s3
+	}
+
+	db, err := store.Open(cfg.SQLitePath)
+	if err != nil {
+		log.Error("sqlite", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	cleaner := &cleanup.Cleaner{
+		Backend:  backend,
+		Store:    db,
+		TTL:      cfg.CacheTTL,
+		Interval: cfg.CleanupInterval,
+		Log:      log,
+	}
+	cleaner.Start(ctx)
+
+	if objects, err := backend.List(ctx); err != nil {
+		log.Warn("could not list existing cache objects", "err", err)
+	} else {
+		for _, obj := range objects {
+			at := obj.LastModified
+			if at.IsZero() {
+				at = time.Now()
+			}
+			if err := db.EnsureEntry(ctx, obj.Hash, obj.Size, at); err != nil {
+				log.Warn("reconcile cache entry", "hash", obj.Hash, "err", err)
+			}
+		}
+		log.Info("reconciled cache catalog", "objects", len(objects))
+	}
+
+	staticFS, err := web.Static()
+	if err != nil {
+		log.Error("static assets", "err", err)
+		os.Exit(1)
+	}
+
+	srv := &httpserver.Server{
+		Cfg:     cfg,
+		Backend: backend,
+		Store:   db,
+		Cleaner: cleaner,
+		Sessions: &auth.Sessions{
+			Secret:   []byte(cfg.SessionSecret),
+			Username: cfg.UIUsername,
+			Secure:   os.Getenv("SESSION_SECURE") == "true",
+		},
+		Log:    log,
+		Static: staticFS,
+	}
+
+	httpSrv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Info("nx cache listening",
+			"addr", httpSrv.Addr,
+			"bucket", cfg.S3Bucket,
+			"ttl", cfg.CacheTTL.String(),
+		)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("server", "err", err)
+			stop()
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
+}

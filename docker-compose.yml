@@ -1,0 +1,43 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  cache:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      NX_CACHE_ACCESS_TOKEN: ${NX_CACHE_ACCESS_TOKEN:-dev-token}
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:-admin}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret}
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      S3_BUCKET_NAME: nx-cache
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PREFIX: nx-cache/
+      S3_FORCE_PATH_STYLE: "true"
+      S3_CREATE_BUCKET: "true"
+      SQLITE_PATH: /data/nx-cache.db
+      CACHE_TTL: 120h
+      CLEANUP_INTERVAL: 1h
+      CLEANUP_ON_SAVE: "true"
+    volumes:
+      - cache-db:/data
+    depends_on:
+      - minio
+
+volumes:
+  minio-data:
+  cache-db:

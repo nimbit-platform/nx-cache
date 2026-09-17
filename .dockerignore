@@ -1,0 +1,8 @@
+.env
+.git
+node_modules
+data
+*.db
+*.db-wal
+bin
+tmp

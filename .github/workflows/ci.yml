@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm install
+      - run: go install github.com/a-h/templ/cmd/templ@v0.3.943
+      - run: templ generate
+      - run: npx @tailwindcss/cli -i assets/css/globals.css -o internal/web/static/app.css --minify
+      - run: go test ./...

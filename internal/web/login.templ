@@ -1,0 +1,58 @@
+package web
+
+import (
+	"github.com/nimbit-platform/nx-cache/components/alert"
+	"github.com/nimbit-platform/nx-cache/components/button"
+	"github.com/nimbit-platform/nx-cache/components/card"
+	"github.com/nimbit-platform/nx-cache/components/input"
+	"github.com/nimbit-platform/nx-cache/components/label"
+)
+
+templ LoginPage(data LoginData) {
+	@Layout("Sign in · Nx Cache") {
+		<main class="mx-auto flex min-h-svh w-full max-w-md items-center px-4">
+			@card.Card(card.Props{Class: "w-full"}) {
+				@card.Header() {
+					<div class="mb-4">
+						@Logo()
+					</div>
+					@card.Title() {
+						Sign in
+					}
+					@card.Description() {
+						Dashboard access is separate from the Nx bearer token used by CI.
+					}
+				}
+				@card.Content() {
+					if data.Error != "" {
+						@alert.Alert(alert.Props{Variant: alert.VariantDestructive, Class: "mb-4"}) {
+							@alert.Title() {
+								Could not sign in
+							}
+							@alert.Description() {
+								{ data.Error }
+							}
+						}
+					}
+					<form method="post" action="/login" class="grid gap-4">
+						<div class="grid gap-2">
+							@label.Label(label.Props{For: "username"}) {
+								Username
+							}
+							@input.Input(input.Props{ID: "username", Name: "username", Value: data.Username, Required: true, Attributes: templ.Attributes{"autocomplete": "username"}})
+						</div>
+						<div class="grid gap-2">
+							@label.Label(label.Props{For: "password"}) {
+								Password
+							}
+							@input.Input(input.Props{ID: "password", Name: "password", Type: "password", Required: true, Attributes: templ.Attributes{"autocomplete": "current-password"}})
+						</div>
+						@button.Button(button.Props{Type: button.TypeSubmit, Class: "w-full"}) {
+							Continue
+						}
+					</form>
+				}
+			}
+		</main>
+	}
+}
