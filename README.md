@@ -153,16 +153,20 @@ CI (`test` workflow) runs unit/controller tests on every PR, plus an `e2e` job w
 
 ## GitHub Actions / GHCR
 
-- `test` workflow: unit tests and RustFS e2e on push and pull request
-- `image` workflow: builds `linux/amd64` and `linux/arm64`, pushes to `ghcr.io/<owner>/<repo>` on `main` and `v*` tags (PRs build without pushing)
+The container is published to **this repository’s GitHub Packages** (GitHub Container Registry), not Docker Hub:
 
-Pull:
+[ghcr.io/nimbit-platform/nx-cache](https://github.com/nimbit-platform/nx-cache/pkgs/container/nx-cache)
+
+Public packages are free. The workflow marks the package public after each push. `latest` is only moved on `main`; `v*` tags publish semver; same-repo PRs publish `sha-*` and `pr-*` tags.
+
+- `test` workflow: unit tests and RustFS e2e on push and pull request
+- `image` workflow: builds `linux/amd64` and `linux/arm64`, then pushes to that package
+
+Pull (no login when the package is public):
 
 ```bash
 docker pull ghcr.io/nimbit-platform/nx-cache:latest
 ```
-
-If the package is private, `docker login ghcr.io` with a GitHub token that can read packages, or set the package visibility to public in GitHub → Packages.
 
 ## Development
 

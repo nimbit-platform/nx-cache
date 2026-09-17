@@ -21,6 +21,11 @@ RUN templ generate
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/nx-cache ./cmd/server
 
 FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/nimbit-platform/nx-cache"
+LABEL org.opencontainers.image.url="https://github.com/nimbit-platform/nx-cache/pkgs/container/nx-cache"
+LABEL org.opencontainers.image.title="nx-cache"
+LABEL org.opencontainers.image.description="Self-hosted Nx remote cache"
+LABEL org.opencontainers.image.licenses="MIT"
 RUN apk add --no-cache ca-certificates tzdata wget
 WORKDIR /app
 COPY --from=build /out/nx-cache /usr/local/bin/nx-cache
