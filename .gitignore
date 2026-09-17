@@ -1,0 +1,13 @@
+bin/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+node_modules/
+tmp/
+.task/
+dist/
+*.out
+cover.out
+.DS_Store

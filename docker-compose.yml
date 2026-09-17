@@ -1,0 +1,49 @@
+services:
+  rustfs:
+    # Empty store on first boot; cache creates S3_BUCKET_NAME via S3_CREATE_BUCKET.
+    image: rustfs/rustfs:latest
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: nxcache
+      RUSTFS_SECRET_KEY: nxcache-e2e-secret-key
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_VOLUMES: /data
+      RUSTFS_OBS_LOGGER_LEVEL: error
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - rustfs-data:/data
+
+  cache:
+    build: .
+    image: ghcr.io/nimbit-platform/nx-cache:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      PORT: "8080"
+      NX_CACHE_ACCESS_TOKEN: ${NX_CACHE_ACCESS_TOKEN:?set NX_CACHE_ACCESS_TOKEN in .env}
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:?set UI_PASSWORD in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      SESSION_SECURE: "false"
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: nxcache
+      AWS_SECRET_ACCESS_KEY: nxcache-e2e-secret-key
+      S3_BUCKET_NAME: nx-cache
+      S3_ENDPOINT_URL: http://rustfs:9000
+      S3_PREFIX: nx-cache/
+      S3_FORCE_PATH_STYLE: "true"
+      S3_CREATE_BUCKET: "true"
+      CATALOG_BACKEND: s3
+      CATALOG_FLUSH_INTERVAL: 30s
+      CACHE_TTL: 120h
+      CLEANUP_INTERVAL: 1h
+      CLEANUP_ON_SAVE: "true"
+    depends_on:
+      - rustfs
+
+volumes:
+  rustfs-data:

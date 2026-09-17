@@ -1,0 +1,49 @@
+package web
+
+import "github.com/nimbit-platform/nx-cache/components/button"
+
+templ Layout(title string) {
+	<!DOCTYPE html>
+	<html lang="en" class="dark">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="/static/app.css"/>
+			<script src="/static/htmx.min.js" defer></script>
+		</head>
+		<body class="min-h-svh bg-background text-foreground antialiased">
+			{ children... }
+		</body>
+	</html>
+}
+
+templ Logo() {
+	<div class="flex items-center gap-2">
+		<svg class="size-7 text-primary" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+			<path d="M16 3 29 10.5v11L16 29 3 21.5v-11L16 3Z" stroke="currentColor" stroke-width="1.6"></path>
+			<path d="M16 12.2 22 15.6v6.8L16 25.8 10 22.4v-6.8L16 12.2Z" fill="currentColor"></path>
+		</svg>
+		<div class="leading-tight">
+			<div class="text-sm font-medium tracking-tight">Nx Cache</div>
+			<div class="text-muted-foreground text-xs">Self-hosted remote cache</div>
+		</div>
+	</div>
+}
+
+templ Nav(username string, ttl string) {
+	<header class="border-b bg-card/70 backdrop-blur">
+		<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
+			@Logo()
+			<div class="flex items-center gap-3">
+				<span class="text-muted-foreground hidden text-xs sm:inline">TTL { ttl }</span>
+				<span class="text-sm">{ username }</span>
+				<form method="post" action="/logout">
+					@button.Button(button.Props{Variant: button.VariantGhost, Size: button.SizeSm, Type: button.TypeSubmit}) {
+						Sign out
+					}
+				</form>
+			</div>
+		</div>
+	</header>
+}

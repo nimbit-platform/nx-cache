@@ -1,0 +1,68 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: go install github.com/a-h/templ/cmd/templ@v0.3.943
+      - run: templ generate
+      - run: npx @tailwindcss/cli -i assets/css/globals.css -o internal/web/static/app.css --minify
+      - name: Generated files match sources
+        run: git diff --exit-code
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      rustfs:
+        image: rustfs/rustfs:latest
+        ports:
+          - 9000:9000
+        env:
+          RUSTFS_ACCESS_KEY: nxcache
+          RUSTFS_SECRET_KEY: nxcache-e2e-secret-key
+          RUSTFS_ADDRESS: ":9000"
+          RUSTFS_VOLUMES: /data
+    env:
+      S3_ENDPOINT_URL: http://127.0.0.1:9000
+      AWS_ACCESS_KEY_ID: nxcache
+      AWS_SECRET_ACCESS_KEY: nxcache-e2e-secret-key
+      S3_BUCKET_NAME: nx-cache-e2e
+      E2E_REQUIRE_RUSTFS: "1"
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - name: Wait for RustFS
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sS -o /dev/null --max-time 2 http://127.0.0.1:9000; then
+              echo "RustFS is accepting connections"
+              exit 0
+            fi
+            echo "waiting for rustfs ($i)"
+            sleep 2
+          done
+          echo "RustFS did not become ready on :9000"
+          exit 1
+      - run: go test -race -tags e2e ./e2e/... -count=1 -timeout 3m
