@@ -163,6 +163,19 @@ func main() {
 	if cfg.SessionSecretRandom {
 		log.Warn("SESSION_SECRET was unset; generated an ephemeral secret (sessions will not survive restart)")
 	}
+	if len(cfg.AllowNets) > 0 {
+		log.Info("IP allow list enabled", "entries", len(cfg.AllowNets))
+	}
+	if cfg.RateLimitRPS > 0 {
+		burst := cfg.RateLimitBurst
+		if burst < 1 {
+			burst = int(cfg.RateLimitRPS)
+			if burst < 1 {
+				burst = 1
+			}
+		}
+		log.Info("per-IP rate limit enabled", "rps", cfg.RateLimitRPS, "burst", burst)
+	}
 
 	httpSrv := &http.Server{
 		Addr:              ":" + cfg.Port,

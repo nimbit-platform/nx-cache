@@ -97,6 +97,9 @@ All settings are environment variables. Also listed in `.env.example`.
 | `SESSION_SECRET` | random ephemeral | Cookie signing secret. Set this in production. |
 | `SESSION_SECURE` | `true` | Session cookies require HTTPS. Set `false` for local HTTP. |
 | `TRUST_FORWARDED_IP` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` only behind a known proxy. |
+| `ALLOW_IPS` | empty | Optional comma-separated IPs/CIDRs (for example `10.0.0.0/8,192.168.1.4`). Empty = any client. `/health` is always allowed. |
+| `RATE_LIMIT_RPS` | `0` | Per-IP request rate (token bucket). `0` disables. `/health` is not limited. |
+| `RATE_LIMIT_BURST` | `0` | Extra tokens above `RATE_LIMIT_RPS`. Defaults to the RPS value when unset. |
 | `AWS_REGION` | `us-east-1` | S3 region |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | default chain | Leave empty to use instance role / IRSA |
 | `S3_BUCKET_NAME` | `nx-cache` | Bucket for artifacts **and** catalog JSON |

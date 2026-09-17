@@ -54,6 +54,8 @@ func (s *Server) Handler() http.Handler {
 	}
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
+	r.Use(s.allowlist)
+	r.Use(s.rateLimit(newIPLimiter(s.Cfg.RateLimitRPS, s.Cfg.RateLimitBurst)))
 	r.Use(requestTimeout(30 * time.Second))
 	r.Use(middleware.Logger)
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -21,6 +22,9 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "")
 	t.Setenv("SESSION_SECURE", "")
 	t.Setenv("TRUST_FORWARDED_IP", "")
+	t.Setenv("ALLOW_IPS", "")
+	t.Setenv("RATE_LIMIT_RPS", "")
+	t.Setenv("RATE_LIMIT_BURST", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +52,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TrustForwardedIP {
 		t.Fatal("must not trust forwarded IP by default")
+	}
+	if len(cfg.AllowNets) != 0 || cfg.RateLimitRPS != 0 {
+		t.Fatal("access controls should be off by default")
 	}
 }
 
@@ -87,5 +94,37 @@ func TestLoadInvalidDuration(t *testing.T) {
 	t.Setenv("CACHE_TTL", "120hh")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid CACHE_TTL to fail")
+	}
+}
+
+func TestParseIPNets(t *testing.T) {
+	nets, err := ParseIPNets("10.0.0.0/8, 192.168.1.4, 2001:db8::/32")
+	if err != nil || len(nets) != 3 {
+		t.Fatalf("%v %v", nets, err)
+	}
+	if !nets[0].Contains(net.ParseIP("10.9.8.7")) || nets[0].Contains(net.ParseIP("11.0.0.1")) {
+		t.Fatalf("cidr %s", nets[0])
+	}
+	if !nets[1].Contains(net.ParseIP("192.168.1.4")) || nets[1].Contains(net.ParseIP("192.168.1.5")) {
+		t.Fatalf("host %s", nets[1])
+	}
+	if _, err := ParseIPNets("not-an-ip"); err == nil {
+		t.Fatal("expected invalid IP")
+	}
+}
+
+func TestLoadAllowIPsAndRateLimit(t *testing.T) {
+	t.Setenv("NX_CACHE_ACCESS_TOKEN", "tok")
+	t.Setenv("UI_PASSWORD", "pw")
+	t.Setenv("S3_BUCKET_NAME", "bucket")
+	t.Setenv("ALLOW_IPS", "10.0.0.0/8")
+	t.Setenv("RATE_LIMIT_RPS", "12.5")
+	t.Setenv("RATE_LIMIT_BURST", "30")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AllowNets) != 1 || cfg.RateLimitRPS != 12.5 || cfg.RateLimitBurst != 30 {
+		t.Fatalf("%+v", cfg)
 	}
 }

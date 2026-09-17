@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ type Config struct {
 	SessionSecretRandom bool
 	SessionSecure       bool
 	TrustForwardedIP    bool
+	AllowNets           []*net.IPNet
+	RateLimitRPS        float64
+	RateLimitBurst      int
 
 	SQLitePath string
 
@@ -83,6 +87,24 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rateRPS, err := envFloat64("RATE_LIMIT_RPS", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	rateBurst, err := envInt64("RATE_LIMIT_BURST", 0)
+	if err != nil {
+		return Config{}, err
+	}
+	if rateRPS < 0 {
+		return Config{}, fmt.Errorf("RATE_LIMIT_RPS cannot be negative")
+	}
+	if rateBurst < 0 {
+		return Config{}, fmt.Errorf("RATE_LIMIT_BURST cannot be negative")
+	}
+	allowNets, err := ParseIPNets(os.Getenv("ALLOW_IPS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Port:               env("PORT", "8080"),
@@ -102,6 +124,9 @@ func Load() (Config, error) {
 		SessionSecret:      os.Getenv("SESSION_SECRET"),
 		SessionSecure:      sessionSecure,
 		TrustForwardedIP:   trustFwd,
+		AllowNets:          allowNets,
+		RateLimitRPS:       rateRPS,
+		RateLimitBurst:     int(rateBurst),
 		SQLitePath:         os.Getenv("SQLITE_PATH"),
 		StorageBackend:     strings.ToLower(env("STORAGE_BACKEND", "s3")),
 		CatalogBackend:     strings.ToLower(env("CATALOG_BACKEND", "s3")),
@@ -194,4 +219,50 @@ func envInt64(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("%s is invalid integer %q", key, v)
 	}
 	return n, nil
+}
+
+func envFloat64(key string, fallback float64) (float64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s is invalid number %q", key, v)
+	}
+	return n, nil
+}
+
+// ParseIPNets parses a comma-separated list of IPs or CIDRs.
+// A bare address becomes a single-host prefix (/32 or /128).
+func ParseIPNets(s string) ([]*net.IPNet, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var out []*net.IPNet
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "/") {
+			_, n, err := net.ParseCIDR(part)
+			if err != nil {
+				return nil, fmt.Errorf("ALLOW_IPS: invalid CIDR %q", part)
+			}
+			out = append(out, n)
+			continue
+		}
+		ip := net.ParseIP(part)
+		if ip == nil {
+			return nil, fmt.Errorf("ALLOW_IPS: invalid IP %q", part)
+		}
+		if v4 := ip.To4(); v4 != nil {
+			out = append(out, &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)})
+		} else {
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)})
+		}
+	}
+	return out, nil
 }

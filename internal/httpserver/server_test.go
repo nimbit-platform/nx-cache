@@ -229,6 +229,74 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
+func TestIPAllowList(t *testing.T) {
+	s, _, _, _ := testServer(t)
+	nets, err := config.ParseIPNets("10.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Cfg.AllowNets = nets
+	h := s.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "8.8.8.8:9"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("health must stay open: %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.RemoteAddr = "10.1.2.3:9"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("allowed: %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.RemoteAddr = "8.8.8.8:9"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("denied: %d", rec.Code)
+	}
+}
+
+func TestIPRateLimit(t *testing.T) {
+	s, _, _, _ := testServer(t)
+	s.Cfg.RateLimitRPS = 1
+	s.Cfg.RateLimitBurst = 2
+	h := s.Handler()
+	reqFor := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/login", nil)
+		req.RemoteAddr = "192.0.2.10:9"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := reqFor(); rec.Code != 200 {
+		t.Fatalf("1: %d", rec.Code)
+	}
+	if rec := reqFor(); rec.Code != 200 {
+		t.Fatalf("2: %d", rec.Code)
+	}
+	rec := reqFor()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After=%s", rec.Header().Get("Retry-After"))
+	}
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "192.0.2.10:9"
+	health := httptest.NewRecorder()
+	h.ServeHTTP(health, req)
+	if health.Code != 200 {
+		t.Fatalf("health must skip rate limit: %d", health.Code)
+	}
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	_, h, _, _ := testServer(t)
 	rec := do(h, http.MethodGet, "/health", "", nil, nil)
