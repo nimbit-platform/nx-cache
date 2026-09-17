@@ -164,6 +164,24 @@ func TestCleanupOlderThanTTL(t *testing.T) {
 	}
 }
 
+func loginCookie(t *testing.T, h http.Handler) *http.Cookie {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("username=admin&password=secret"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("login: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "nx_cache_session" {
+			return c
+		}
+	}
+	t.Fatal("expected session cookie")
+	return nil
+}
+
 func TestUIRequiresLogin(t *testing.T) {
 	_, h, _, _ := testServer(t)
 	rec := do(h, http.MethodGet, "/", "", nil, nil)
@@ -176,19 +194,9 @@ func TestUIRequiresLogin(t *testing.T) {
 	if rec.Code != 401 {
 		t.Fatalf("bad login: %d", rec.Code)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("username=admin&password=secret"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("good login: %d %s", rec.Code, rec.Body.String())
-	}
-	cookie := rec.Result().Cookies()
-	if len(cookie) == 0 {
-		t.Fatal("expected session cookie")
-	}
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(cookie[0])
+	cookie := loginCookie(t, h)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -196,5 +204,142 @@ func TestUIRequiresLogin(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Remote cache") {
 		t.Fatalf("dashboard missing title: %s", rec.Body.String()[:min(200, rec.Body.Len())])
+	}
+}
+
+func TestHeadInvalidHashAndTooLarge(t *testing.T) {
+	_, h, _, _ := testServer(t)
+	payload := []byte("nx-artifact")
+
+	rec := do(h, http.MethodHead, "/v1/cache/abc123", "write-token", nil, nil)
+	if rec.Code != 404 {
+		t.Fatalf("head miss: %d", rec.Code)
+	}
+
+	rec = do(h, http.MethodPut, "/v1/cache/abc123", "write-token", payload, map[string]string{"Content-Length": "11"})
+	if rec.Code != 200 {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(h, http.MethodHead, "/v1/cache/abc123", "read-token", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("head hit: %d", rec.Code)
+	}
+
+	rec = do(h, http.MethodPut, "/v1/cache/not%20ok", "write-token", payload, map[string]string{"Content-Length": "11"})
+	if rec.Code != 400 {
+		t.Fatalf("invalid hash: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = do(h, http.MethodGet, "/v1/cache/not%20ok", "write-token", nil, nil)
+	if rec.Code != 404 {
+		t.Fatalf("invalid hash get: %d", rec.Code)
+	}
+
+	s, _, _, _ := testServer(t)
+	s.Cfg.MaxUploadBytes = 4
+	h = s.Handler()
+	rec = do(h, http.MethodPut, "/v1/cache/tiny", "write-token", []byte("xxxxx"), map[string]string{"Content-Length": "5"})
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("too large: %d", rec.Code)
+	}
+}
+
+func TestDashboardListsArtifactsAndHTMX(t *testing.T) {
+	_, h, _, _ := testServer(t)
+	payload := []byte("nx-artifact")
+	rec := do(h, http.MethodPut, "/v1/cache/lib-build-1", "write-token", payload, map[string]string{"Content-Length": "11"})
+	if rec.Code != 200 {
+		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(h, http.MethodGet, "/v1/cache/lib-build-1", "read-token", nil, nil)
+	if rec.Code != 200 {
+		t.Fatalf("get: %d", rec.Code)
+	}
+	rec = do(h, http.MethodGet, "/v1/cache/missing-x", "read-token", nil, nil)
+	if rec.Code != 404 {
+		t.Fatalf("miss: %d", rec.Code)
+	}
+
+	rec = do(h, http.MethodGet, "/ui/entries", "", nil, nil)
+	if rec.Code != 401 {
+		t.Fatalf("unauth entries: %d", rec.Code)
+	}
+	if rec.Header().Get("HX-Redirect") != "/login" {
+		t.Fatalf("HX-Redirect=%s", rec.Header().Get("HX-Redirect"))
+	}
+
+	cookie := loginCookie(t, h)
+
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("logged-in /login should redirect, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, "lib-build-1") {
+		t.Fatalf("dashboard: %d %s", rec.Code, body[:min(400, len(body))])
+	}
+	if !strings.Contains(body, "Hits / misses") || !strings.Contains(body, "Cached artifacts") {
+		t.Fatalf("dashboard missing stats: %s", body[:min(400, len(body))])
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/entries?q=lib", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "lib-build-1") {
+		t.Fatalf("entries: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/entries?q=zzz-none", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "No cache artifacts yet") {
+		t.Fatalf("empty filter: %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Artifacts") {
+		t.Fatalf("stats: %d %s", rec.Code, rec.Body.String()[:min(300, rec.Body.Len())])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/ui/cleanup", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("cleanup: %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "expired") {
+		t.Fatalf("cleanup location %s", loc)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/logout", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("logout: %d", rec.Code)
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "nx_cache_session" && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("expected session cookie to be cleared")
 	}
 }

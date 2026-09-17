@@ -1,15 +1,20 @@
 services:
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:latest
+    command: ["/data"]
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: nxcache
+      RUSTFS_SECRET_KEY: nxcache-e2e-secret-key
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_VOLUMES: /data
+      RUSTFS_OBS_LOGGER_LEVEL: error
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
 
   cache:
     build: .
@@ -23,10 +28,10 @@ services:
       UI_PASSWORD: ${UI_PASSWORD:-admin}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret}
       AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ACCESS_KEY_ID: nxcache
+      AWS_SECRET_ACCESS_KEY: nxcache-e2e-secret-key
       S3_BUCKET_NAME: nx-cache
-      S3_ENDPOINT_URL: http://minio:9000
+      S3_ENDPOINT_URL: http://rustfs:9000
       S3_PREFIX: nx-cache/
       S3_FORCE_PATH_STYLE: "true"
       S3_CREATE_BUCKET: "true"
@@ -36,7 +41,7 @@ services:
       CLEANUP_INTERVAL: 1h
       CLEANUP_ON_SAVE: "true"
     depends_on:
-      - minio
+      - rustfs
 
 volumes:
-  minio-data:
+  rustfs-data:

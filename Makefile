@@ -1,4 +1,4 @@
-.PHONY: generate css test build docker tidy
+.PHONY: generate css test e2e build docker tidy screenshots
 
 generate:
 	templ generate
@@ -11,6 +11,12 @@ tidy:
 
 test: generate
 	go test ./...
+
+e2e:
+	go test -tags e2e ./e2e/... -count=1 -timeout 3m
+
+screenshots:
+	go run ./cmd/screenshot
 
 build: generate css
 	go build -o bin/nx-cache ./cmd/server

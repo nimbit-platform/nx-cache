@@ -1,6 +1,6 @@
 # Nx Cache
 
-Self-hosted [Nx remote cache](https://nx.dev/docs/kb/self-hosted-caching) server. Artifacts live in S3 (or MinIO). The HTTP API follows the Nx OpenAPI spec. A small dashboard shows what is cached, how old it is, and hit/miss counts.
+Self-hosted [Nx remote cache](https://nx.dev/docs/kb/self-hosted-caching) server. Artifacts live in S3 (or any S3-compatible store such as [RustFS](https://rustfs.com) or MinIO). The HTTP API follows the Nx OpenAPI spec. A small dashboard shows what is cached, how old it is, and hit/miss counts.
 
 Inspired by [IKatsuba/nx-cache-server](https://github.com/IKatsuba/nx-cache-server), implemented in Go with Chi.
 
@@ -8,10 +8,14 @@ Inspired by [IKatsuba/nx-cache-server](https://github.com/IKatsuba/nx-cache-serv
 
 License: [MIT](LICENSE).
 
+![Sign-in page](docs/screenshots/login.png)
+
+![Dashboard with artifacts, age, and hit/miss stats](docs/screenshots/dashboard.png)
+
 ## Features
 
 - `PUT` / `GET` / `HEAD` `/v1/cache/{hash}` with bearer auth
-- S3 or S3-compatible storage (AWS, MinIO, Cloudflare R2, …)
+- S3 or S3-compatible storage (AWS, RustFS, MinIO, Cloudflare R2, …)
 - Does not overwrite existing hashes (`409`)
 - Requires `Content-Length` (`411`); truncated uploads are discarded
 - Optional read-only token (`403` on write)
@@ -38,7 +42,7 @@ docker run --rm -p 8080:8080 \
   ghcr.io/nimbit-platform/nx-cache:latest
 ```
 
-Local MinIO stack:
+Local RustFS stack:
 
 ```bash
 UI_PASSWORD=choose-a-password docker compose up --build
@@ -46,15 +50,7 @@ UI_PASSWORD=choose-a-password docker compose up --build
 
 - Cache API: `http://localhost:8080`
 - UI: `http://localhost:8080/login`
-- MinIO console: `http://localhost:9001`
-
-Point an Nx workspace at the server:
-
-```bash
-export NX_SELF_HOSTED_REMOTE_CACHE_SERVER=http://localhost:8080
-export NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN=dev-token
-npx nx run-many -t build
-```
+- RustFS console: `http://localhost:9001`
 
 ## Passwords and tokens
 
@@ -95,7 +91,7 @@ All settings are environment variables. Also listed in `.env.example`.
 | `AWS_REGION` | `us-east-1` | S3 region |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | default chain | Leave empty to use instance role / IRSA |
 | `S3_BUCKET_NAME` | `nx-cache` | Bucket for artifacts **and** catalog JSON |
-| `S3_ENDPOINT_URL` | empty | Set for MinIO / R2 |
+| `S3_ENDPOINT_URL` | empty | Set for RustFS / MinIO / R2 |
 | `S3_PREFIX` | `nx-cache/` | Object key prefix |
 | `S3_FORCE_PATH_STYLE` | true when endpoint set | Path-style S3 |
 | `S3_CREATE_BUCKET` | `false` | Create the bucket on boot |
@@ -121,9 +117,38 @@ Matches the [Nx self-hosted cache spec](https://nx.dev/docs/kb/self-hosted-cachi
 
 Authorization: `Authorization: Bearer <token>`.
 
+## Testing
+
+An Nx workspace is **not** required to verify this server. Nx only speaks `PUT` / `GET` / `HEAD` `/v1/cache/{hash}` with a bearer token and an `application/octet-stream` body. Controller tests and the RustFS e2e suite send that same protocol.
+
+```bash
+make test          # unit + HTTP controller tests (in-memory backend)
+make e2e           # Nx OpenAPI contract against real RustFS
+make screenshots   # Chrome captures of /login and the dashboard → docs/screenshots/
+```
+
+`make e2e` skips if nothing is listening on `S3_ENDPOINT_URL` (default `http://127.0.0.1:9000`). To fail instead of skip:
+
+```bash
+docker compose up -d rustfs
+E2E_REQUIRE_RUSTFS=1 make e2e
+```
+
+Default RustFS credentials match compose: access key `nxcache`, secret `nxcache-e2e-secret-key`, bucket `nx-cache-e2e`.
+
+Optional: point a real Nx workspace at a running server.
+
+```bash
+export NX_SELF_HOSTED_REMOTE_CACHE_SERVER=http://localhost:8080
+export NX_SELF_HOSTED_REMOTE_CACHE_ACCESS_TOKEN=dev-token
+npx nx run-many -t build
+```
+
+CI (`test` workflow) runs unit/controller tests on every PR, plus an `e2e` job with a RustFS service container.
+
 ## GitHub Actions / GHCR
 
-- `test` workflow: `go test ./...` on push and pull request
+- `test` workflow: unit tests and RustFS e2e on push and pull request
 - `image` workflow: builds `linux/amd64` and `linux/arm64`, pushes to `ghcr.io/<owner>/<repo>` on `main` and `v*` tags (PRs build without pushing)
 
 Pull:
@@ -142,5 +167,6 @@ Requires Go 1.25+ and [templ](https://templ.guide).
 go install github.com/a-h/templ/cmd/templ@v0.3.943
 npm install
 make test
+make screenshots
 make build
 ```
