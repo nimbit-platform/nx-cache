@@ -16,6 +16,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("STORAGE_BACKEND", "")
 	t.Setenv("CATALOG_BACKEND", "")
 	t.Setenv("SQLITE_PATH", "")
+	t.Setenv("CATALOG_FLUSH_INTERVAL", "")
 	t.Setenv("CACHE_TTL", "")
 	cfg, err := Load()
 	if err != nil {
@@ -29,6 +30,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.CatalogBackend != "s3" {
 		t.Fatalf("catalog %s", cfg.CatalogBackend)
+	}
+	if cfg.CatalogFlush != 30*time.Second {
+		t.Fatalf("flush %s", cfg.CatalogFlush)
 	}
 	if cfg.SQLitePath != "" {
 		t.Fatalf("sqlite should be off by default, got %s", cfg.SQLitePath)

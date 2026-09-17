@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,67 @@ func TestObjectCatalog(t *testing.T) {
 	}
 	if total != 1 || len(entries) != 1 || entries[0].Hash != "aaa" || entries[0].Hits != 1 {
 		t.Fatalf("%d %+v", total, entries)
+	}
+}
+
+func TestObjectCatalogFlush(t *testing.T) {
+	mem := storage.NewMemory()
+	ctx := context.Background()
+	now := time.Now()
+	if err := mem.Put(ctx, "aaa", strings.NewReader("helloworld"), 10); err != nil {
+		t.Fatal(err)
+	}
+	cat := NewObject(mem)
+	if err := cat.UpsertEntry(ctx, "aaa", 10, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.RecordHit(ctx, "aaa", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.GetMeta(ctx, catalogMetaKey); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected no snapshot before flush, got %v", err)
+	}
+	if err := cat.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	loaded := NewObject(mem)
+	if err := loaded.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := loaded.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Hits != 1 || stats.Stores != 1 || stats.Entries != 1 {
+		t.Fatalf("reloaded %+v", stats)
+	}
+}
+
+func TestObjectCatalogFlushInterval(t *testing.T) {
+	mem := storage.NewMemory()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cat := NewObject(mem, ObjectOptions{FlushInterval: 20 * time.Millisecond})
+	cat.Start(ctx)
+	if err := mem.Put(ctx, "zzz", strings.NewReader("payloadxx"), 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.UpsertEntry(ctx, "zzz", 9, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, err := mem.GetMeta(ctx, catalogMetaKey)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("catalog was not flushed on interval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := cat.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

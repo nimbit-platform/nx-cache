@@ -23,10 +23,10 @@ type Entry struct {
 }
 
 type DayStat struct {
-	Day    string
-	Hits   int64
-	Misses int64
-	Stores int64
+	Day    string `json:"day"`
+	Hits   int64  `json:"hits"`
+	Misses int64  `json:"misses"`
+	Stores int64  `json:"stores"`
 }
 
 type Stats struct {

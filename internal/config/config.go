@@ -33,6 +33,7 @@ type Config struct {
 
 	StorageBackend string
 	CatalogBackend string
+	CatalogFlush   time.Duration
 
 	CacheTTL        time.Duration
 	CleanupInterval time.Duration
@@ -60,6 +61,7 @@ func Load() (Config, error) {
 		SQLitePath:         os.Getenv("SQLITE_PATH"),
 		StorageBackend:     strings.ToLower(env("STORAGE_BACKEND", "s3")),
 		CatalogBackend:     strings.ToLower(env("CATALOG_BACKEND", "s3")),
+		CatalogFlush:       envDuration("CATALOG_FLUSH_INTERVAL", 30*time.Second),
 		CacheTTL:           envDuration("CACHE_TTL", 5*24*time.Hour),
 		CleanupInterval:    envDuration("CLEANUP_INTERVAL", time.Hour),
 		CleanupOnSave:      envBool("CLEANUP_ON_SAVE", true),
@@ -95,6 +97,9 @@ func Load() (Config, error) {
 	}
 	if cfg.CacheTTL <= 0 {
 		return Config{}, fmt.Errorf("CACHE_TTL must be positive")
+	}
+	if cfg.CatalogFlush < 0 {
+		return Config{}, fmt.Errorf("CATALOG_FLUSH_INTERVAL cannot be negative")
 	}
 	return cfg, nil
 }

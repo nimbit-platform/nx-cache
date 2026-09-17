@@ -101,13 +101,14 @@ All settings are environment variables. Also listed in `.env.example`.
 | `S3_CREATE_BUCKET` | `false` | Create the bucket on boot |
 | `STORAGE_BACKEND` | `s3` | `s3` or `memory` (dev only, not durable) |
 | `CATALOG_BACKEND` | `s3` | `s3` (same bucket, no extra DB) or `sqlite` |
+| `CATALOG_FLUSH_INTERVAL` | `30s` | How often the in-memory catalog/stats snapshot is written to S3. `0` disables the timer (still flushes on shutdown). |
 | `SQLITE_PATH` | unset | Only used when `CATALOG_BACKEND=sqlite` (then defaults to `data/nx-cache.db`) |
 | `CACHE_TTL` | `120h` | Delete artifacts older than this |
 | `CLEANUP_INTERVAL` | `1h` | Background cleanup cadence |
 | `CLEANUP_ON_SAVE` | `true` | Also purge expired objects after `PUT` |
 | `MAX_UPLOAD_BYTES` | `2GiB` | Reject larger uploads |
 
-With `CATALOG_BACKEND=s3`, hits/misses live at `{S3_PREFIX}.meta/stats.json` and per-hash metadata at `{S3_PREFIX}.meta/entries/{hash}.json`.
+With `CATALOG_BACKEND=s3`, hits/misses and per-hash metadata are kept in memory and flushed as one snapshot to `{S3_PREFIX}.meta/catalog.json` every `CATALOG_FLUSH_INTERVAL` (and again on shutdown). Artifact `PUT`/`GET` still go to S3 immediately.
 
 ## API
 

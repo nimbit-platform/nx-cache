@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -12,11 +13,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 )
 
-const (
-	statsMetaKey = "stats.json"
-)
-
-func entryMetaKey(hash string) string { return "entries/" + hash + ".json" }
+const catalogMetaKey = "catalog.json"
 
 type objectStats struct {
 	Hits   int64               `json:"hits"`
@@ -25,57 +22,195 @@ type objectStats struct {
 	Days   map[string]*DayStat `json:"days"`
 }
 
-// Object keeps the catalog and counters next to artifacts (S3 or memory).
+type snapshot struct {
+	Stats   objectStats      `json:"stats"`
+	Entries map[string]Entry `json:"entries"`
+}
+
+// ObjectOptions controls how the S3 catalog is cached and flushed.
+type ObjectOptions struct {
+	FlushInterval time.Duration
+	Log           *slog.Logger
+}
+
+// Object keeps the catalog in memory and flushes a single JSON snapshot to S3.
 type Object struct {
-	backend storage.Backend
-	mu      sync.Mutex
+	backend    storage.Backend
+	flushEvery time.Duration
+	log        *slog.Logger
+	mu         sync.Mutex
+	flushMu    sync.Mutex
+	entries    map[string]Entry
+	stats      objectStats
+	dirty      bool
+	wg         sync.WaitGroup
 }
 
-func NewObject(backend storage.Backend) *Object {
-	return &Object{backend: backend}
-}
-
-func (o *Object) Close() error { return nil }
-
-func (o *Object) UpsertEntry(ctx context.Context, hash string, size int64, at time.Time) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	e := Entry{Hash: hash, Size: size, CreatedAt: at, LastAccessedAt: at}
-	if existing, err := o.loadEntry(ctx, hash); err == nil {
-		e.CreatedAt = existing.CreatedAt
-		e.Hits = existing.Hits
-		if existing.LastAccessedAt.After(e.LastAccessedAt) {
-			e.LastAccessedAt = existing.LastAccessedAt
-		}
+func NewObject(backend storage.Backend, opts ...ObjectOptions) *Object {
+	var o ObjectOptions
+	if len(opts) > 0 {
+		o = opts[0]
 	}
-	if err := o.saveEntry(ctx, e); err != nil {
+	log := o.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Object{
+		backend:    backend,
+		flushEvery: o.FlushInterval,
+		log:        log,
+		entries:    map[string]Entry{},
+		stats:      objectStats{Days: map[string]*DayStat{}},
+	}
+}
+
+func (o *Object) Load(ctx context.Context) error {
+	data, err := o.backend.GetMeta(ctx, catalogMetaKey)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	return o.bumpLocked(ctx, "stores", at)
-}
-
-func (o *Object) RecordHit(ctx context.Context, hash string, at time.Time) error {
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	e, err := o.loadEntry(ctx, hash)
-	if err != nil {
-		if !errors.Is(err, storage.ErrNotFound) {
-			return err
+	if snap.Entries != nil {
+		o.entries = snap.Entries
+	}
+	o.stats = snap.Stats
+	if o.stats.Days == nil {
+		o.stats.Days = map[string]*DayStat{}
+	}
+	o.dirty = false
+	return nil
+}
+
+func (o *Object) Start(ctx context.Context) {
+	if o.flushEvery <= 0 {
+		return
+	}
+	o.wg.Add(1)
+	go func() {
+		defer o.wg.Done()
+		t := time.NewTicker(o.flushEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := o.Flush(context.WithoutCancel(ctx)); err != nil {
+					o.log.Error("catalog flush failed", "err", err)
+				}
+			}
 		}
+	}()
+}
+
+func (o *Object) Close() error {
+	o.wg.Wait()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return o.Flush(ctx)
+}
+
+func (o *Object) Flush(ctx context.Context) error {
+	o.flushMu.Lock()
+	defer o.flushMu.Unlock()
+
+	o.mu.Lock()
+	if !o.dirty {
+		o.mu.Unlock()
+		return nil
+	}
+	snap := o.cloneLocked()
+	o.dirty = false
+	o.mu.Unlock()
+
+	data, err := json.Marshal(snap)
+	if err != nil {
+		o.markDirty()
+		return err
+	}
+	if err := o.backend.PutMeta(ctx, catalogMetaKey, data); err != nil {
+		o.markDirty()
+		return err
+	}
+	return nil
+}
+
+func (o *Object) markDirty() {
+	o.mu.Lock()
+	o.dirty = true
+	o.mu.Unlock()
+}
+
+func (o *Object) cloneLocked() snapshot {
+	entries := make(map[string]Entry, len(o.entries))
+	for k, v := range o.entries {
+		entries[k] = v
+	}
+	days := make(map[string]*DayStat, len(o.stats.Days))
+	for k, v := range o.stats.Days {
+		if v == nil {
+			continue
+		}
+		cp := *v
+		days[k] = &cp
+	}
+	return snapshot{
+		Stats: objectStats{
+			Hits:   o.stats.Hits,
+			Misses: o.stats.Misses,
+			Stores: o.stats.Stores,
+			Days:   days,
+		},
+		Entries: entries,
+	}
+}
+
+func (o *Object) UpsertEntry(_ context.Context, hash string, size int64, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.entries[hash]
+	if e.Hash == "" {
+		e = Entry{Hash: hash, CreatedAt: at, LastAccessedAt: at}
+	}
+	e.Size = size
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = at
+	}
+	o.entries[hash] = e
+	o.bumpLocked("stores", at)
+	o.dirty = true
+	return nil
+}
+
+func (o *Object) RecordHit(_ context.Context, hash string, at time.Time) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e := o.entries[hash]
+	if e.Hash == "" {
 		e = Entry{Hash: hash, CreatedAt: at}
 	}
 	e.Hits++
 	e.LastAccessedAt = at
-	if err := o.saveEntry(ctx, e); err != nil {
-		return err
-	}
-	return o.bumpLocked(ctx, "hits", at)
+	o.entries[hash] = e
+	o.bumpLocked("hits", at)
+	o.dirty = true
+	return nil
 }
 
-func (o *Object) RecordMiss(ctx context.Context, at time.Time) error {
+func (o *Object) RecordMiss(_ context.Context, at time.Time) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.bumpLocked(ctx, "misses", at)
+	o.bumpLocked("misses", at)
+	o.dirty = true
+	return nil
 }
 
 func (o *Object) List(ctx context.Context, query string, limit, offset int) ([]Entry, int, error) {
@@ -121,15 +256,17 @@ func (o *Object) ListOlderThan(ctx context.Context, cutoff time.Time) ([]Entry, 
 	return old, nil
 }
 
-func (o *Object) Delete(ctx context.Context, hashes []string) error {
+func (o *Object) Delete(_ context.Context, hashes []string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(hashes))
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	for _, h := range hashes {
-		keys = append(keys, entryMetaKey(h))
+		delete(o.entries, h)
 	}
-	return o.backend.DeleteMeta(ctx, keys)
+	o.dirty = true
+	return nil
 }
 
 func (o *Object) Stats(ctx context.Context) (Stats, error) {
@@ -137,17 +274,14 @@ func (o *Object) Stats(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	s := Stats{Entries: int64(len(entries))}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	s := Stats{Entries: int64(len(entries)), Hits: o.stats.Hits, Misses: o.stats.Misses, Stores: o.stats.Stores}
 	for _, e := range entries {
 		s.TotalSize += e.Size
 	}
-	raw, err := o.loadStats(ctx)
-	if err != nil {
-		return Stats{}, err
-	}
-	s.Hits, s.Misses, s.Stores = raw.Hits, raw.Misses, raw.Stores
 	since := time.Now().UTC().AddDate(0, 0, -6).Format("2006-01-02")
-	for day, st := range raw.Days {
+	for day, st := range o.stats.Days {
 		if day >= since && st != nil {
 			s.Days = append(s.Days, DayStat{Day: day, Hits: st.Hits, Misses: st.Misses, Stores: st.Stores})
 		}
@@ -156,21 +290,28 @@ func (o *Object) Stats(ctx context.Context) (Stats, error) {
 	return s, nil
 }
 
-func (o *Object) EnsureEntry(ctx context.Context, hash string, size int64, at time.Time) error {
+func (o *Object) EnsureEntry(_ context.Context, hash string, size int64, at time.Time) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if _, err := o.loadEntry(ctx, hash); err == nil {
+	if e, ok := o.entries[hash]; ok {
+		if e.Size == 0 && size > 0 {
+			e.Size = size
+			o.entries[hash] = e
+			o.dirty = true
+		}
 		return nil
-	} else if !errors.Is(err, storage.ErrNotFound) {
-		return err
 	}
-	return o.saveEntry(ctx, Entry{Hash: hash, Size: size, CreatedAt: at, LastAccessedAt: at})
+	o.entries[hash] = Entry{Hash: hash, Size: size, CreatedAt: at, LastAccessedAt: at}
+	o.dirty = true
+	return nil
 }
 
 func (o *Object) Seed(e Entry) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.saveEntry(context.Background(), e)
+	o.entries[e.Hash] = e
+	o.dirty = true
+	return nil
 }
 
 func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
@@ -178,10 +319,12 @@ func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	entries := make([]Entry, 0, len(objects))
 	for _, obj := range objects {
 		e := Entry{Hash: obj.Hash, Size: obj.Size, CreatedAt: obj.LastModified, LastAccessedAt: obj.LastModified}
-		if meta, err := o.loadEntry(ctx, obj.Hash); err == nil {
+		if meta, ok := o.entries[obj.Hash]; ok {
 			if !meta.CreatedAt.IsZero() {
 				e.CreatedAt = meta.CreatedAt
 			}
@@ -192,8 +335,6 @@ func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
 			if meta.Size > 0 {
 				e.Size = meta.Size
 			}
-		} else if !errors.Is(err, storage.ErrNotFound) {
-			return nil, err
 		}
 		entries = append(entries, e)
 	}
@@ -201,72 +342,25 @@ func (o *Object) allEntries(ctx context.Context) ([]Entry, error) {
 	return entries, nil
 }
 
-func (o *Object) loadEntry(ctx context.Context, hash string) (Entry, error) {
-	data, err := o.backend.GetMeta(ctx, entryMetaKey(hash))
-	if err != nil {
-		return Entry{}, err
-	}
-	var e Entry
-	if err := json.Unmarshal(data, &e); err != nil {
-		return Entry{}, err
-	}
-	return e, nil
-}
-
-func (o *Object) saveEntry(ctx context.Context, e Entry) error {
-	data, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	return o.backend.PutMeta(ctx, entryMetaKey(e.Hash), data)
-}
-
-func (o *Object) loadStats(ctx context.Context) (objectStats, error) {
-	data, err := o.backend.GetMeta(ctx, statsMetaKey)
-	if errors.Is(err, storage.ErrNotFound) {
-		return objectStats{Days: map[string]*DayStat{}}, nil
-	}
-	if err != nil {
-		return objectStats{}, err
-	}
-	var s objectStats
-	if err := json.Unmarshal(data, &s); err != nil {
-		return objectStats{}, err
-	}
-	if s.Days == nil {
-		s.Days = map[string]*DayStat{}
-	}
-	return s, nil
-}
-
-func (o *Object) bumpLocked(ctx context.Context, key string, at time.Time) error {
-	s, err := o.loadStats(ctx)
-	if err != nil {
-		return err
-	}
+func (o *Object) bumpLocked(key string, at time.Time) {
 	switch key {
 	case "hits":
-		s.Hits++
+		o.stats.Hits++
 	case "misses":
-		s.Misses++
+		o.stats.Misses++
 	case "stores":
-		s.Stores++
+		o.stats.Stores++
 	}
 	day := at.UTC().Format("2006-01-02")
-	if s.Days[day] == nil {
-		s.Days[day] = &DayStat{Day: day}
+	if o.stats.Days[day] == nil {
+		o.stats.Days[day] = &DayStat{Day: day}
 	}
 	switch key {
 	case "hits":
-		s.Days[day].Hits++
+		o.stats.Days[day].Hits++
 	case "misses":
-		s.Days[day].Misses++
+		o.stats.Days[day].Misses++
 	case "stores":
-		s.Days[day].Stores++
+		o.stats.Days[day].Stores++
 	}
-	data, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	return o.backend.PutMeta(ctx, statsMetaKey, data)
 }

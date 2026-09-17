@@ -88,10 +88,22 @@ func main() {
 		catalog = db
 		log.Info("catalog backend", "type", "sqlite", "path", cfg.SQLitePath)
 	default:
-		catalog = store.NewObject(backend)
-		log.Info("catalog backend", "type", "s3")
+		obj := store.NewObject(backend, store.ObjectOptions{
+			FlushInterval: cfg.CatalogFlush,
+			Log:           log,
+		})
+		if err := obj.Load(ctx); err != nil {
+			log.Warn("could not load catalog snapshot from s3", "err", err)
+		}
+		obj.Start(ctx)
+		catalog = obj
+		log.Info("catalog backend", "type", "s3", "flush", cfg.CatalogFlush.String())
 	}
-	defer catalog.Close()
+	defer func() {
+		if err := catalog.Close(); err != nil {
+			log.Error("catalog close", "err", err)
+		}
+	}()
 
 	cleaner := &cleanup.Cleaner{
 		Backend:  backend,
