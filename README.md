@@ -21,6 +21,7 @@ License: [MIT](LICENSE).
 - Optional read-only token (`403` on write)
 - Artifacts older than **5 days** are deleted by a background job **and** after a successful save
 - Dashboard (templ + HTMX + Tailwind + [shadcn-templ](https://github.com/axadrn/shadcn-templ)) with session login
+- Real-time dashboard updates via HTTP long polling with standard browser cache headers (`ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`) and Go channel propagation
 - Infers **project:target** (build / test / lint / …) from the Nx tar's `terminalOutput` — the OpenAPI PUT only sends a content hash
 
 ## Quick start
