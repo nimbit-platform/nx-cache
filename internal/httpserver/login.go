@@ -138,7 +138,11 @@ func requestTimeout(d time.Duration) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), d)
+			timeout := d
+			if strings.HasPrefix(r.URL.Path, "/ui/") {
+				timeout = 60 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
