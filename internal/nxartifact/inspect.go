@@ -29,6 +29,9 @@ var (
 	nxCommandRe   = regexp.MustCompile(`(?im)^\s*(?:>\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:(?:pnpm|npm|npx|bunx|yarn)\s+(?:(?:exec|run)\s+)?)?nx(?:\.exe)?\s+(.+)$`)
 	nxTargetRe    = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
 	toolProjectRe = regexp.MustCompile(`(?im)^\s*running\s+([A-Za-z0-9._-]+)\s+for\s+project:\s+([A-Za-z0-9_@./-]+)`)
+	testResultRe  = regexp.MustCompile(`(?im)^\s*(?:pass|fail)\s+([A-Za-z0-9_@./-]+)\s+(?:(?:apps|libs)/\S+)`)
+	testSummaryRe = regexp.MustCompile(`(?im)^\s*(?:test suites:|tests:|test files:)`)
+	testCommandRe = regexp.MustCompile(`(?im)^\s*>\s*(?:(?:pnpm|npm|npx|bunx|yarn)\s+(?:(?:exec|run)\s+)?)?(?:jest|vitest)(?:\s|$)`)
 	commandRe     = regexp.MustCompile(`(?m)^\s*>\s+(.+?)\s*$`)
 )
 
@@ -223,6 +226,8 @@ func finalize(info store.TaskInfo, terminal string, paths []string) store.TaskIn
 		info.Project, info.Target, info.Config = p, t, c
 	} else if p, t, ok := parseToolProject(text); ok {
 		info.Project, info.Target = p, t
+	} else if p, t, k, ok := parseTestOutput(text); ok {
+		info.Project, info.Target, info.Kind = p, t, k
 	} else if p, t, ok := parseNxTargetLine(text); ok {
 		if info.Project == "" {
 			info.Project = p
@@ -418,6 +423,16 @@ func parseToolProject(text string) (project, target string, ok bool) {
 		return "", "", false
 	}
 	return cleanToken(m[2]), kind, true
+}
+
+func parseTestOutput(text string) (project, target, kind string, ok bool) {
+	if m := testResultRe.FindStringSubmatch(text); len(m) >= 2 {
+		return cleanToken(m[1]), "test", "test", true
+	}
+	if testSummaryRe.MatchString(text) || testCommandRe.MatchString(text) {
+		return "", "test", "test", true
+	}
+	return "", "", "", false
 }
 
 func stripANSI(s string) string {

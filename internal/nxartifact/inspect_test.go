@@ -136,6 +136,29 @@ func TestInspectExecutorOutput(t *testing.T) {
 	}
 }
 
+func TestInspectTestRunnerOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		term    string
+		project string
+	}{
+		{name: "jest", term: "PASS   ocb  apps/ocb/src/example.spec.ts\nTest Suites: 1 passed, 1 total\n", project: "ocb"},
+		{name: "jest library", term: "FAIL   data-access-react-core  libs/data-access/react-core/src/example.spec.ts\n", project: "data-access-react-core"},
+		{name: "vitest command", term: "> vitest run\n", project: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := Pack(tc.term, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := Inspect(bytes.NewReader(payload))
+			if info.Project != tc.project || info.Target != "test" || info.Kind != "test" {
+				t.Fatalf("%+v", info)
+			}
+		})
+	}
+}
+
 func TestInspectNxServeCommand(t *testing.T) {
 	for _, terminal := range []string{
 		"> nx serve ocb --outputStyle=static\n",
