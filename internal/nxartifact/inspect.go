@@ -24,10 +24,12 @@ const (
 )
 
 var (
-	ansiRe     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
-	nxRunRe    = regexp.MustCompile(`(?i)(?:^|\n)\s*>\s*nx(?:\.exe)?\s+run\s+(\S+)`)
-	nxTargetRe = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
-	commandRe  = regexp.MustCompile(`(?m)^\s*>\s+(.+?)\s*$`)
+	ansiRe        = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+	nxRunRe       = regexp.MustCompile(`(?i)(?:^|\n)\s*>\s*nx(?:\.exe)?\s+run\s+(\S+)`)
+	nxCommandRe   = regexp.MustCompile(`(?im)^\s*(?:>\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:(?:pnpm|npm|npx|bunx|yarn)\s+(?:(?:exec|run)\s+)?)?nx(?:\.exe)?\s+(.+)$`)
+	nxTargetRe    = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
+	toolProjectRe = regexp.MustCompile(`(?im)^\s*running\s+([A-Za-z0-9._-]+)\s+for\s+project:\s+([A-Za-z0-9_@./-]+)`)
+	commandRe     = regexp.MustCompile(`(?m)^\s*>\s+(.+?)\s*$`)
 )
 
 // Inspect reads an Nx remote-cache payload (gzip tar, as produced by HttpRemoteCache)
@@ -217,6 +219,10 @@ func finalize(info store.TaskInfo, terminal string, paths []string) store.TaskIn
 	text := stripANSI(terminal)
 	if p, t, c, ok := parseNxRun(text); ok {
 		info.Project, info.Target, info.Config = p, t, c
+	} else if p, t, c, ok := parseNxCommand(text); ok {
+		info.Project, info.Target, info.Config = p, t, c
+	} else if p, t, ok := parseToolProject(text); ok {
+		info.Project, info.Target = p, t
 	} else if p, t, ok := parseNxTargetLine(text); ok {
 		if info.Project == "" {
 			info.Project = p
@@ -238,8 +244,12 @@ func finalize(info store.TaskInfo, terminal string, paths []string) store.TaskIn
 	if info.Kind == "" {
 		info.Kind = KindFromTarget(info.Target)
 	}
+	pathKind := KindFromPaths(paths)
 	if info.Kind == "" {
-		info.Kind = KindFromPaths(paths)
+		info.Kind = pathKind
+	}
+	if info.Target == "" {
+		info.Target = pathKind
 	}
 	return info
 }
@@ -294,8 +304,10 @@ func parseCommand(text string) (string, bool) {
 func projectFromPaths(paths []string) string {
 	for _, name := range paths {
 		parts := strings.Split(name, "/")
-		if len(parts) >= 2 && (parts[0] == "apps" || parts[0] == "libs") {
-			return parts[1]
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] == "apps" || parts[i] == "libs" {
+				return parts[i+1]
+			}
 		}
 	}
 	return ""
@@ -304,7 +316,7 @@ func projectFromPaths(paths []string) string {
 func commandKind(command string) string {
 	kind := KindFromTarget(command)
 	switch kind {
-	case "build", "test", "lint", "e2e", "typecheck":
+	case "build", "test", "lint", "e2e", "typecheck", "serve":
 		return kind
 	default:
 		return ""
@@ -316,9 +328,67 @@ func parseNxRun(text string) (project, target, config string, ok bool) {
 	if len(m) < 2 {
 		return "", "", "", false
 	}
-	token := strings.TrimRightFunc(m[1], func(r rune) bool {
+	return parseTaskToken(cleanToken(m[1]))
+}
+
+func parseNxCommand(text string) (project, target, config string, ok bool) {
+	m := nxCommandRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return "", "", "", false
+	}
+	fields := strings.Fields(m[1])
+	if len(fields) < 2 || strings.HasPrefix(fields[0], "-") {
+		return "", "", "", false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "running", "ran", "successfully":
+		return "", "", "", false
+	}
+	if fields[0] == "run" {
+		return parseTaskToken(cleanToken(fields[1]))
+	}
+	if fields[0] == "run-many" {
+		target, ok := parseSingleNxTarget(fields[1:])
+		if !ok {
+			return "", "", "", false
+		}
+		return "", target, "", true
+	}
+	if strings.HasPrefix(fields[1], "-") {
+		return "", "", "", false
+	}
+	return cleanToken(fields[1]), cleanToken(fields[0]), "", true
+}
+
+func parseSingleNxTarget(args []string) (string, bool) {
+	var targets []string
+	for i := 0; i < len(args); i++ {
+		name, value, hasValue := strings.Cut(args[i], "=")
+		if name != "-t" && name != "--target" && name != "--targets" {
+			continue
+		}
+		if hasValue {
+			targets = append(targets, strings.Split(value, ",")...)
+			continue
+		}
+		for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			targets = append(targets, strings.Split(args[i+1], ",")...)
+			i++
+		}
+	}
+	if len(targets) != 1 || targets[0] == "" {
+		return "", false
+	}
+	return cleanToken(targets[0]), true
+}
+
+func cleanToken(token string) string {
+	return strings.TrimRightFunc(token, func(r rune) bool {
 		return unicode.IsPunct(r) && r != '/' && r != '@' && r != '-' && r != '_' && r != '.'
 	})
+}
+
+func parseTaskToken(token string) (project, target, config string, ok bool) {
 	parts := strings.Split(token, ":")
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", false
@@ -336,6 +406,18 @@ func parseNxTargetLine(text string) (project, target string, ok bool) {
 		return "", "", false
 	}
 	return strings.TrimRight(m[2], ".:"), m[1], true
+}
+
+func parseToolProject(text string) (project, target string, ok bool) {
+	m := toolProjectRe.FindStringSubmatch(text)
+	if len(m) < 3 {
+		return "", "", false
+	}
+	kind := commandKind(m[1])
+	if kind == "" {
+		return "", "", false
+	}
+	return cleanToken(m[2]), kind, true
 }
 
 func stripANSI(s string) string {

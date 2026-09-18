@@ -57,6 +57,19 @@ func TestStatsAndList(t *testing.T) {
 	if total != 1 || len(entries) != 1 || entries[0].Hash != "aaa" || entries[0].Hits != 1 {
 		t.Fatalf("%d %+v", total, entries)
 	}
+	if err := db.UpdateTaskInfo(ctx, "aaa", TaskInfo{Project: "app", Target: "tsc", Kind: "typecheck"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := db.List(ctx, "", 10, 0)
+	var task Entry
+	for _, entry := range updated {
+		if entry.Hash == "aaa" {
+			task = entry
+		}
+	}
+	if err != nil || task.Label() != "app:tsc" || task.Kind != "typecheck" {
+		t.Fatalf("updated task: %v %+v", err, updated)
+	}
 }
 
 func TestObjectCatalog(t *testing.T) {

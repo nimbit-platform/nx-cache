@@ -39,3 +39,14 @@ func TestCheckPassword(t *testing.T) {
 		t.Fatal("empty vs set")
 	}
 }
+
+func TestCSRFToken(t *testing.T) {
+	s := &Sessions{Secret: []byte("secret")}
+	token := s.CSRFToken("admin")
+	if !s.ValidCSRFToken("admin", token) {
+		t.Fatal("expected token to validate")
+	}
+	if s.ValidCSRFToken("other", token) || s.ValidCSRFToken("admin", "wrong") {
+		t.Fatal("expected token to reject other users and values")
+	}
+}

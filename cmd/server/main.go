@@ -15,6 +15,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/config"
 	"github.com/nimbit-platform/nx-cache/internal/httpserver"
 	"github.com/nimbit-platform/nx-cache/internal/longpoll"
+	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 	"github.com/nimbit-platform/nx-cache/internal/web"
@@ -139,6 +140,26 @@ func main() {
 			}
 			if err := catalog.EnsureEntry(recCtx, obj.Hash, obj.Size, at); err != nil {
 				log.Warn("reconcile cache entry", "hash", obj.Hash, "err", err)
+			}
+		}
+		entries, _, err := catalog.List(recCtx, "", len(objects), 0)
+		if err == nil {
+			for _, entry := range entries {
+				if entry.Label() != "" && entry.Kind != "" {
+					continue
+				}
+				body, _, err := backend.Get(recCtx, entry.Hash)
+				if err != nil {
+					continue
+				}
+				info := nxartifact.Inspect(body)
+				_ = body.Close()
+				if info.Empty() {
+					continue
+				}
+				if err := catalog.UpdateTaskInfo(recCtx, entry.Hash, info); err != nil {
+					log.Warn("reclassify cache entry", "hash", entry.Hash, "err", err)
+				}
 			}
 		}
 		log.Info("reconciled cache catalog", "objects", len(objects))

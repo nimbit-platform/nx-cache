@@ -344,6 +344,30 @@ func (o *Object) EnsureEntry(_ context.Context, hash string, size int64, at time
 	return nil
 }
 
+func (o *Object) UpdateTaskInfo(_ context.Context, hash string, info TaskInfo) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.entries[hash]
+	if !ok {
+		return nil
+	}
+	if info.Project != "" {
+		e.Project = info.Project
+	}
+	if info.Target != "" {
+		e.Target = info.Target
+	}
+	if info.Config != "" {
+		e.Config = info.Config
+	}
+	if info.Kind != "" {
+		e.Kind = info.Kind
+	}
+	o.entries[hash] = e
+	o.dirty = true
+	return nil
+}
+
 func (o *Object) Seed(e Entry) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()

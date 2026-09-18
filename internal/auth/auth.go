@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	cookieName = "nx_cache_session"
-	sessionTTL = 12 * time.Hour
+	cookieName  = "nx_cache_session"
+	sessionTTL  = 12 * time.Hour
+	csrfPurpose = "nx-cache-ui"
 )
 
 func BearerOK(header, writeToken, readToken string, write bool) (ok bool, status int, msg string) {
@@ -98,6 +99,14 @@ func (s *Sessions) UsernameFromRequest(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return user, true
+}
+
+func (s *Sessions) CSRFToken(username string) string {
+	return sign(s.Secret, csrfPurpose+"|"+username)
+}
+
+func (s *Sessions) ValidCSRFToken(username, token string) bool {
+	return token != "" && secureEq(token, s.CSRFToken(username))
 }
 
 func sign(secret []byte, payload string) string {

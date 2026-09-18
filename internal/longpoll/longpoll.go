@@ -48,10 +48,7 @@ func (h *Hub) Notify() {
 
 	h.version++
 	now := time.Now().UTC().Truncate(time.Second)
-	if !now.After(h.updatedAt) {
-		// Ensure timestamp is strictly monotonic for HTTP-date second resolution.
-		h.updatedAt = h.updatedAt.Add(time.Second)
-	} else {
+	if now.After(h.updatedAt) {
 		h.updatedAt = now
 	}
 

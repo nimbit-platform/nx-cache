@@ -447,7 +447,7 @@ func TestHeadInvalidHashAndTooLarge(t *testing.T) {
 }
 
 func TestDashboardListsArtifactsAndHTMX(t *testing.T) {
-	_, h, _, _ := testServer(t)
+	s, h, _, _ := testServer(t)
 	payload := []byte("nx-artifact")
 	rec := do(h, http.MethodPut, "/v1/cache/lib-build-1", "write-token", payload, map[string]string{"Content-Length": "11"})
 	if rec.Code != 200 {
@@ -518,6 +518,7 @@ func TestDashboardListsArtifactsAndHTMX(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodPost, "/ui/cleanup", nil)
 	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", s.Sessions.CSRFToken("admin"))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
@@ -527,8 +528,21 @@ func TestDashboardListsArtifactsAndHTMX(t *testing.T) {
 		t.Fatalf("cleanup location %s", loc)
 	}
 
+	req = httptest.NewRequest(http.MethodPost, "/ui/entries/lib-build-1/delete", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", s.Sessions.CSRFToken("admin"))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("purge: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = do(h, http.MethodGet, "/v1/cache/lib-build-1", "read-token", nil, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("purged artifact still exists: %d", rec.Code)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(cookie)
+	req.Header.Set("X-CSRF-Token", s.Sessions.CSRFToken("admin"))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
@@ -580,7 +594,7 @@ func TestDashboardShowsTaskFromNxTar(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("dashboard: %d", rec.Code)
 	}
-	for _, want := range []string{"web:build:production", "api:lint", "build", "lint", "By target"} {
+	for _, want := range []string{"web:build:production", "api:lint", "build", "lint", "By kind"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in dashboard: %s", want, body[:min(800, len(body))])
 		}
@@ -909,6 +923,7 @@ func TestLongPollingIfModifiedSince(t *testing.T) {
 	// Trigger cleanup to notify
 	cleanRec := httptest.NewRequest(http.MethodPost, "/ui/cleanup", nil)
 	cleanRec.AddCookie(cookie)
+	cleanRec.Header.Set("X-CSRF-Token", s.Sessions.CSRFToken("admin"))
 	cleanResp := httptest.NewRecorder()
 	h.ServeHTTP(cleanResp, cleanRec)
 

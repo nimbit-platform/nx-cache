@@ -65,7 +65,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	ttl, err := envDuration("CACHE_TTL", 5*24*time.Hour)
+	ttl, err := envDuration("CACHE_TTL", 72*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}

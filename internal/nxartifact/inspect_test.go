@@ -75,6 +75,83 @@ func TestInspectCommandOutput(t *testing.T) {
 	}
 }
 
+func TestInspectVerbosePnpmNxRun(t *testing.T) {
+	payload, err := Pack("> NX_VERBOSE_LOGGING=true pnpm nx run iot-breeze:tsc --outputStyle=static\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := Inspect(bytes.NewReader(payload))
+	if info.Project != "iot-breeze" || info.Target != "tsc" || info.Kind != "typecheck" {
+		t.Fatalf("%+v", info)
+	}
+}
+
+func TestInspectNxWrapperForms(t *testing.T) {
+	for _, terminal := range []string{
+		"> pnpm exec nx run iot-breeze:lint --outputStyle=static\n",
+		"> pnpm run nx run iot-breeze:lint --outputStyle=static\n",
+		"> npx nx run iot-breeze:lint --outputStyle=static\n",
+	} {
+		payload, err := Pack(terminal, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := Inspect(bytes.NewReader(payload))
+		if info.Project != "iot-breeze" || info.Target != "lint" || info.Kind != "lint" {
+			t.Fatalf("terminal=%q info=%+v", terminal, info)
+		}
+	}
+}
+
+func TestInspectRunMany(t *testing.T) {
+	payload, err := Pack("> npx nx run-many -t build\n", 0, map[string][]byte{
+		"outputs/apps/iot-breeze/dist/main.js": []byte("bundle"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := Inspect(bytes.NewReader(payload))
+	if info.Project != "iot-breeze" || info.Target != "build" || info.Kind != "build" {
+		t.Fatalf("single target info=%+v", info)
+	}
+
+	payload, err = Pack("> npx nx run-many -t build lint test\n> nx run iot-breeze:lint\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info = Inspect(bytes.NewReader(payload))
+	if info.Project != "iot-breeze" || info.Target != "lint" || info.Kind != "lint" {
+		t.Fatalf("multi target info=%+v", info)
+	}
+}
+
+func TestInspectExecutorOutput(t *testing.T) {
+	payload, err := Pack("Running oxlint for project: iot-breeze\n\n✅ oxlint completed successfully for iot-breeze\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := Inspect(bytes.NewReader(payload))
+	if info.Project != "iot-breeze" || info.Target != "lint" || info.Kind != "lint" {
+		t.Fatalf("%+v", info)
+	}
+}
+
+func TestInspectNxServeCommand(t *testing.T) {
+	for _, terminal := range []string{
+		"> nx serve ocb --outputStyle=static\n",
+		"> NX_VERBOSE_LOGGING=true pnpm nx serve ocb --outputStyle=static\n",
+	} {
+		payload, err := Pack(terminal, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := Inspect(bytes.NewReader(payload))
+		if info.Project != "ocb" || info.Target != "serve" || info.Kind != "serve" {
+			t.Fatalf("terminal=%q info=%+v", terminal, info)
+		}
+	}
+}
+
 func TestInspectCapsTarBomb(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)

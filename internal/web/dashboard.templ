@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 
 	"github.com/nimbit-platform/nx-cache/components/badge"
@@ -13,14 +14,15 @@ import (
 
 templ DashboardPage(data DashboardData) {
 	@Layout("Remote cache · Nx Cache") {
-		@Nav(data.Username, data.TTL)
+			@Nav(data.Username, data.TTL, data.CSRFToken)
 		<main class="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6">
 			<div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
 				<div>
 					<h1 class="font-heading text-2xl tracking-tight">Remote cache</h1>
-					<p class="text-muted-foreground text-sm">S3-backed Nx artifacts, hit/miss stats, and 5-day retention.</p>
+					<p class="text-muted-foreground text-sm">S3-backed Nx artifacts, live cache signals, and { data.TTL } retention.</p>
 				</div>
 				<form method="post" action="/ui/cleanup">
+					<input type="hidden" name="csrf_token" value={ data.CSRFToken }/>
 					@button.Button(button.Props{Type: button.TypeSubmit, Variant: button.VariantOutline}) {
 						Purge expired
 					}
@@ -31,9 +33,7 @@ templ DashboardPage(data DashboardData) {
 					{ data.Message }
 				}
 			}
-			<div id="stats" hx-get="/ui/stats" hx-trigger="every 15s" hx-swap="outerHTML">
-				@StatsSection(data)
-			</div>
+			@StatsSection(data)
 			@card.Card() {
 				@card.Header(card.HeaderProps{Class: "border-b"}) {
 					@card.Title() {
@@ -69,14 +69,16 @@ templ DashboardPage(data DashboardData) {
 }
 
 templ StatsSection(data DashboardData) {
-	<div id="stats" class="grid gap-4 md:grid-cols-4" hx-get="/ui/stats" hx-trigger="every 15s" hx-swap="outerHTML">
+	<div id="stats" class="grid gap-4 md:grid-cols-4 lg:grid-cols-6" hx-get="/ui/stats" hx-trigger="every 15s" hx-swap="outerHTML">
 		@statCard("Artifacts", fmt.Sprintf("%d", data.Stats.Entries), "Objects currently in cache")
 		@statCard("Storage", FormatBytes(data.Stats.TotalSize), "Total size on S3")
 		@statCard("Hit rate", FormatRate(data.Stats), fmt.Sprintf("%d stores", data.Stats.Stores))
 		@statCard("Hits / misses", fmt.Sprintf("%d / %d", data.Stats.Hits, data.Stats.Misses), "Nx GET outcomes")
+		@statCard("Read p50 / p95", FormatLatencyPair(data.Latency.Reads), LatencyHint("GET", data.Latency.Reads))
+		@statCard("Write p50 / p95", FormatLatencyPair(data.Latency.Writes), LatencyHint("PUT", data.Latency.Writes))
 		if len(data.Kinds) > 0 {
-			<div class="md:col-span-4 flex flex-wrap items-center gap-2">
-				<span class="text-muted-foreground text-xs">By target</span>
+			<div class="md:col-span-4 lg:col-span-6 flex flex-wrap items-center gap-2">
+				<span class="text-muted-foreground text-xs">By kind</span>
 				for _, k := range data.Kinds {
 					@badge.Badge(badge.Props{Variant: badge.VariantOutline, Class: KindBadgeClass(k.Kind)}) {
 						{ fmt.Sprintf("%s %d", k.Kind, k.Count) }
@@ -84,25 +86,71 @@ templ StatsSection(data DashboardData) {
 				}
 			</div>
 		}
-		<div class="md:col-span-4">
-			@card.Card() {
+		<div class="h-full md:col-span-2 lg:col-span-3">
+			@card.Card(card.Props{Class: "h-full"}) {
 				@card.Header() {
 					@card.Title() {
-						Cache hits vs misses
+						Daily activity
 					}
 					@card.Description() {
-						Share of successful restores against 404 misses.
+						The last seven days of cache traffic.
 					}
 				}
-				@card.Content() {
-					<div class="bg-muted flex h-3 overflow-hidden rounded-full">
-						<div class="bg-emerald-500 h-full" style={ templ.SafeCSS(fmt.Sprintf("width: %.2f%%", data.HitBarWidth)) }></div>
-						<div class="bg-rose-500 h-full" style={ templ.SafeCSS(fmt.Sprintf("width: %.2f%%", data.MissBarWidth)) }></div>
-					</div>
-					<div class="text-muted-foreground mt-3 flex gap-4 text-xs">
-						<span class="flex items-center gap-1.5"><span class="bg-emerald-500 size-2 rounded-full"></span>Hits { fmt.Sprintf("%.1f%%", data.HitBarWidth) }</span>
-						<span class="flex items-center gap-1.5"><span class="bg-rose-500 size-2 rounded-full"></span>Misses { fmt.Sprintf("%.1f%%", data.MissBarWidth) }</span>
-					</div>
+				@card.Content(card.ContentProps{Class: "flex flex-1 flex-col items-center justify-center"}) {
+					if len(data.DayBars) == 0 {
+						<p class="text-muted-foreground text-sm">No traffic recorded yet.</p>
+					} else {
+						<div class="w-full space-y-3">
+							for _, day := range data.DayBars {
+								<div class="grid grid-cols-[3.25rem_1fr] items-center gap-3 text-xs">
+									<span class="text-muted-foreground">{ day.Label }</span>
+									<div class="bg-muted flex h-3 overflow-hidden rounded-full" title={ fmt.Sprintf("%s: %d hits, %d misses", day.Label, day.Hits, day.Misses) }>
+										<div class="bg-emerald-500 h-full" style={ templ.SafeCSS(fmt.Sprintf("width: %.2f%%", day.HitWidth)) }></div>
+										<div class="bg-rose-500 h-full" style={ templ.SafeCSS(fmt.Sprintf("width: %.2f%%", day.MissWidth)) }></div>
+									</div>
+								</div>
+							}
+						</div>
+						<div class="text-muted-foreground mt-4 flex gap-4 text-xs">
+							<span class="flex items-center gap-1.5"><span class="bg-emerald-500 size-2 rounded-full"></span>Hits</span>
+							<span class="flex items-center gap-1.5"><span class="bg-rose-500 size-2 rounded-full"></span>Misses</span>
+						</div>
+					}
+				}
+			}
+		</div>
+		<div class="h-full md:col-span-2 lg:col-span-3">
+			@card.Card(card.Props{Class: "h-full"}) {
+				@card.Header() {
+					@card.Title() {
+						Cache kinds
+					}
+					@card.Description() {
+						Artifact distribution inferred from Nx output.
+					}
+				}
+				@card.Content(card.ContentProps{Class: "flex flex-1 items-center"}) {
+					if len(data.KindLegend) == 0 {
+						<p class="text-muted-foreground text-sm">No classified artifacts yet.</p>
+					} else {
+						<div class="grid grid-cols-[7rem_1fr] items-center gap-6">
+							<div class="relative size-28 shrink-0" role="img" aria-label="Cache kind distribution">
+								<div class="size-full rounded-full" style={ templ.SafeCSS(data.KindPieStyle) }></div>
+								<div class="bg-card absolute inset-4 flex flex-col items-center justify-center rounded-full border text-center">
+									<span class="text-lg font-semibold tabular-nums">{ fmt.Sprintf("%d", data.Stats.Entries) }</span>
+									<span class="text-muted-foreground text-[10px] uppercase tracking-wide">artifacts</span>
+								</div>
+							</div>
+							<div class="min-w-0 space-y-2">
+								for _, kind := range data.KindLegend {
+									<div class="grid grid-cols-[1fr_auto] items-center gap-4 text-xs">
+										<span class="flex items-center gap-2"><span class="size-2 rounded-full" style={ templ.SafeCSS(kind.ColorStyle) }></span>{ kind.Kind }</span>
+										<span class="text-muted-foreground tabular-nums">{ strconv.FormatInt(kind.Count, 10) } · { kind.Percent }</span>
+									</div>
+								}
+							</div>
+						</div>
+					}
 				}
 			}
 		</div>
@@ -129,6 +177,7 @@ templ EntriesSection(data DashboardData) {
 	if len(data.Entries) == 0 {
 		<p class="text-muted-foreground py-10 text-center text-sm">No cache artifacts yet. Point Nx at this server and run a build, test, or lint.</p>
 	} else {
+		<div class="overflow-x-auto">
 		@table.Table() {
 			@table.Header() {
 				@table.Row() {
@@ -152,6 +201,9 @@ templ EntriesSection(data DashboardData) {
 					}
 					@table.Head() {
 						Last access
+					}
+					@table.Head(table.HeadProps{Class: "text-right"}) {
+						Action
 					}
 				}
 			}
@@ -189,10 +241,17 @@ templ EntriesSection(data DashboardData) {
 						@table.Cell(table.CellProps{Class: "text-muted-foreground"}) {
 							{ e.LastAccess }
 						}
+						@table.Cell(table.CellProps{Class: "text-right"}) {
+							<form method="post" action={ fmt.Sprintf("/ui/entries/%s/delete", url.PathEscape(e.Hash)) } onsubmit="return confirm('Purge this cache artifact?')">
+								<input type="hidden" name="csrf_token" value={ data.CSRFToken }/>
+								<button type="submit" class="text-muted-foreground text-xs hover:text-destructive">Purge</button>
+							</form>
+						}
 					}
 				}
 			}
 		}
+		</div>
 		if data.Pages > 1 {
 			<div class="flex items-center justify-between py-4">
 				<p class="text-muted-foreground text-xs">{ fmt.Sprintf("%d artifacts", data.Total) }</p>

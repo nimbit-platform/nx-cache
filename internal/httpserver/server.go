@@ -17,6 +17,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
 	"github.com/nimbit-platform/nx-cache/internal/longpoll"
+	"github.com/nimbit-platform/nx-cache/internal/metrics"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 	"github.com/nimbit-platform/nx-cache/internal/web"
@@ -34,10 +35,14 @@ type Server struct {
 	Static      fs.FS
 	Hub         *longpoll.Hub
 	PollTimeout time.Duration
+	Metrics     *metrics.Collector
 	logins      *loginGate
 }
 
 func (s *Server) Handler() http.Handler {
+	if s.Metrics == nil {
+		s.Metrics = metrics.New()
+	}
 	cache := &cacheapi.Handler{
 		Backend:       s.Backend,
 		Store:         s.Store,
@@ -45,6 +50,8 @@ func (s *Server) Handler() http.Handler {
 		CleanupOnSave: s.Cfg.CleanupOnSave,
 		MaxUpload:     s.Cfg.MaxUploadBytes,
 		Log:           s.logger(),
+		Metrics:       s.Metrics,
+		Notify:        s.hub().Notify,
 	}
 
 	if s.logins == nil {
@@ -85,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/ui/entries", s.entries)
 		r.Get("/ui/stats", s.stats)
 		r.Post("/ui/cleanup", s.cleanupNow)
+		r.Post("/ui/entries/{hash}/delete", s.deleteEntry)
 		r.Post("/logout", s.logout)
 	})
 	return r
@@ -158,6 +166,10 @@ func (s *Server) loginPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if !s.validCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
 	s.Sessions.ClearCookie(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
@@ -229,6 +241,10 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cleanupNow(w http.ResponseWriter, r *http.Request) {
+	if !s.validCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
 	n, err := s.Cleaner.Run(r.Context())
 	if err != nil {
 		s.logger().Error("manual cleanup", "err", err)
@@ -237,6 +253,41 @@ func (s *Server) cleanupNow(w http.ResponseWriter, r *http.Request) {
 	}
 	s.hub().Notify()
 	http.Redirect(w, r, "/?"+url.Values{"msg": {strconv.Itoa(n) + " expired artifacts removed"}}.Encode(), http.StatusSeeOther)
+}
+
+func (s *Server) deleteEntry(w http.ResponseWriter, r *http.Request) {
+	if !s.validCSRF(r) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	hash := chi.URLParam(r, "hash")
+	if !cacheapi.ValidHash(hash) {
+		http.Error(w, "invalid hash", http.StatusBadRequest)
+		return
+	}
+	if err := s.Backend.Delete(r.Context(), []string{hash}); err != nil {
+		s.logger().Error("manual cache delete failed", "hash", hash, "err", err)
+		http.Error(w, "purge failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.Store.Delete(r.Context(), []string{hash}); err != nil {
+		s.logger().Error("manual catalog delete failed", "hash", hash, "err", err)
+		http.Error(w, "purge failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/?"+url.Values{"msg": {"artifact " + web.ShortHash(hash) + " purged"}}.Encode(), http.StatusSeeOther)
+}
+
+func (s *Server) validCSRF(r *http.Request) bool {
+	user, ok := s.Sessions.UsernameFromRequest(r)
+	if !ok {
+		return false
+	}
+	token := r.Header.Get("X-CSRF-Token")
+	if token == "" {
+		token = r.FormValue("csrf_token")
+	}
+	return s.Sessions.ValidCSRFToken(user, token)
 }
 
 func (s *Server) dashboardData(r *http.Request) (web.DashboardData, error) {
@@ -255,7 +306,11 @@ func (s *Server) dashboardData(r *http.Request) (web.DashboardData, error) {
 	}
 	user, _ := s.Sessions.UsernameFromRequest(r)
 	msg := r.URL.Query().Get("msg")
-	return web.NewDashboard(user, s.Cfg.CacheTTL.String(), q, msg, page, pageSize, stats, entries, total), nil
+	var latency metrics.Snapshot
+	if s.Metrics != nil {
+		latency = s.Metrics.Snapshot()
+	}
+	return web.NewDashboard(user, s.Sessions.CSRFToken(user), s.Cfg.CacheTTL.String(), q, msg, page, pageSize, stats, entries, total, latency), nil
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, c templ.Component) {

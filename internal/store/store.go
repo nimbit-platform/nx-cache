@@ -93,6 +93,7 @@ type Store interface {
 	Delete(ctx context.Context, hashes []string) error
 	Stats(ctx context.Context) (Stats, error)
 	EnsureEntry(ctx context.Context, hash string, size int64, at time.Time) error
+	UpdateTaskInfo(ctx context.Context, hash string, info TaskInfo) error
 	Seed(e Entry) error
 	Close() error
 }
@@ -358,6 +359,18 @@ func (d *DB) EnsureEntry(ctx context.Context, hash string, size int64, at time.T
 INSERT OR IGNORE INTO cache_entries(hash, size, created_at, last_accessed_at, hits)
 VALUES (?, ?, ?, ?, 0)
 `, hash, size, unix, unix)
+	return err
+}
+
+func (d *DB) UpdateTaskInfo(ctx context.Context, hash string, info TaskInfo) error {
+	_, err := d.sql.ExecContext(ctx, `
+UPDATE cache_entries SET
+  project = CASE WHEN ? = '' THEN project ELSE ? END,
+  target = CASE WHEN ? = '' THEN target ELSE ? END,
+  config = CASE WHEN ? = '' THEN config ELSE ? END,
+  kind = CASE WHEN ? = '' THEN kind ELSE ? END
+WHERE hash = ?
+`, info.Project, info.Project, info.Target, info.Target, info.Config, info.Config, info.Kind, info.Kind, hash)
 	return err
 }
 

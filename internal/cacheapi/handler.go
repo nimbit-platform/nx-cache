@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
+	"github.com/nimbit-platform/nx-cache/internal/metrics"
 	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/reqlog"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
@@ -29,6 +30,8 @@ type Handler struct {
 	MaxUpload     int64
 	Now           func() time.Time
 	Log           *slog.Logger
+	Metrics       *metrics.Collector
+	Notify        func()
 }
 
 func (h *Handler) log(r *http.Request) *slog.Logger {
@@ -70,6 +73,15 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	started := time.Now()
+	defer func() {
+		if h.Metrics != nil {
+			h.Metrics.ObserveWrite(time.Since(started), size)
+		}
+		if h.Notify != nil {
+			h.Notify()
+		}
+	}()
 
 	exists, err := h.Backend.Exists(r.Context(), hash)
 	if err != nil {
@@ -137,12 +149,23 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "The record was not found", http.StatusNotFound)
 		return
 	}
+	started := time.Now()
+	var readSize int64
+	defer func() {
+		if h.Metrics != nil {
+			h.Metrics.ObserveRead(time.Since(started), readSize)
+		}
+		if h.Notify != nil {
+			h.Notify()
+		}
+	}()
 	body, size, err := h.Backend.Get(r.Context(), hash)
 	if errors.Is(err, storage.ErrNotFound) {
 		_ = h.Store.RecordMiss(r.Context(), h.now())
 		http.Error(w, "The record was not found", http.StatusNotFound)
 		return
 	}
+	readSize = size
 	if err != nil {
 		h.log(r).Error("cache get failed", "hash", hash, "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)

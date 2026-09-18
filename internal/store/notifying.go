@@ -72,6 +72,14 @@ func (n *NotifyingStore) EnsureEntry(ctx context.Context, hash string, size int6
 	return err
 }
 
+func (n *NotifyingStore) UpdateTaskInfo(ctx context.Context, hash string, info TaskInfo) error {
+	err := n.Store.UpdateTaskInfo(ctx, hash, info)
+	if err == nil && !info.Empty() {
+		n.notify()
+	}
+	return err
+}
+
 func (n *NotifyingStore) Seed(e Entry) error {
 	err := n.Store.Seed(e)
 	if err == nil {

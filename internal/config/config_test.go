@@ -31,7 +31,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CacheTTL != 5*24*time.Hour {
+	if cfg.CacheTTL != 72*time.Hour {
 		t.Fatalf("ttl %s", cfg.CacheTTL)
 	}
 	if cfg.StorageBackend != "s3" {

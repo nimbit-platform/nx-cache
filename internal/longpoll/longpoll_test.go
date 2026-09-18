@@ -29,11 +29,22 @@ func TestHubInitialStateAndNotify(t *testing.T) {
 	if s2.Version != 2 {
 		t.Fatalf("expected version 2, got %d", s2.Version)
 	}
-	if !s2.LastModified.After(s1.LastModified) {
-		t.Fatalf("expected LastModified to increase monotonically, got s1=%v, s2=%v", s1.LastModified, s2.LastModified)
+	if s2.LastModified.Before(s1.LastModified) {
+		t.Fatalf("expected LastModified not to move backwards, got s1=%v, s2=%v", s1.LastModified, s2.LastModified)
 	}
 	if s2.ETag == s1.ETag {
 		t.Fatalf("expected ETag to change after notify")
+	}
+}
+
+func TestHubNotifyDoesNotFutureDate(t *testing.T) {
+	hub := NewHub()
+	for range 10 {
+		hub.Notify()
+	}
+
+	if state := hub.Snapshot(); state.LastModified.After(time.Now().UTC().Truncate(time.Second)) {
+		t.Fatalf("expected LastModified not to be in the future, got %v", state.LastModified)
 	}
 }
 

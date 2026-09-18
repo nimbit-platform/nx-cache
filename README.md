@@ -19,7 +19,7 @@ License: [MIT](LICENSE).
 - Does not overwrite existing hashes (`409`)
 - Requires `Content-Length` (`411`); truncated uploads are discarded
 - Optional read-only token (`403` on write)
-- Artifacts older than **5 days** are deleted by a background job **and** after a successful save
+- Artifacts older than **72 hours** are deleted by a background job **and** after a successful save (override with `CACHE_TTL`)
 - Dashboard (templ + HTMX + Tailwind + [shadcn-templ](https://github.com/axadrn/shadcn-templ)) with session login
 - Real-time dashboard updates via HTTP long polling with standard browser cache headers (`ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`) and Go channel propagation
 - Infers **project:target** (build / test / lint / …) from the Nx tar's `terminalOutput` — the OpenAPI PUT only sends a content hash
@@ -114,7 +114,7 @@ All settings are environment variables. Also listed in `.env.example`.
 | `CATALOG_BACKEND` | `s3` | `s3` (same bucket, no extra DB) or `sqlite` |
 | `CATALOG_FLUSH_INTERVAL` | `30s` | How often the in-memory catalog/stats snapshot is written to S3. `0` disables the timer (still flushes on shutdown). |
 | `SQLITE_PATH` | unset | Only used when `CATALOG_BACKEND=sqlite` (then defaults to `data/nx-cache.db`; the Docker image sets `/data/nx-cache.db`) |
-| `CACHE_TTL` | `120h` | Delete artifacts whose **create time** is older than this (not last access) |
+| `CACHE_TTL` | `72h` | Delete artifacts whose **create time** is older than this (not last access); override with any Go duration |
 | `CLEANUP_INTERVAL` | `1h` | Background cleanup cadence |
 | `CLEANUP_ON_SAVE` | `true` | Also purge expired objects after `PUT` |
 | `MAX_UPLOAD_BYTES` | `2GiB` | Reject larger uploads |
