@@ -14,6 +14,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
 	"github.com/nimbit-platform/nx-cache/internal/httpserver"
+	"github.com/nimbit-platform/nx-cache/internal/longpoll"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 	"github.com/nimbit-platform/nx-cache/internal/web"
@@ -101,6 +102,13 @@ func main() {
 		log.Info("catalog backend", "type", "s3", "flush", cfg.CatalogFlush.String())
 		log.Warn("S3 catalog is single-replica; run only one process per bucket prefix")
 	}
+
+	hub := longpoll.NewHub()
+	defer func() {
+		_ = hub.Close()
+	}()
+	catalog = store.NewNotifying(catalog, hub)
+
 	defer func() {
 		if err := catalog.Close(); err != nil {
 			log.Error("catalog close", "err", err)
@@ -152,8 +160,10 @@ func main() {
 			Username: cfg.UIUsername,
 			Secure:   cfg.SessionSecure,
 		},
-		Log:    log,
-		Static: staticFS,
+		Log:         log,
+		Static:      staticFS,
+		Hub:         hub,
+		PollTimeout: 30 * time.Second,
 	}
 
 	if cfg.SessionSecretRandom {

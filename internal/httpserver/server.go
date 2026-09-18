@@ -16,6 +16,7 @@ import (
 	"github.com/nimbit-platform/nx-cache/internal/cacheapi"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
+	"github.com/nimbit-platform/nx-cache/internal/longpoll"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
 	"github.com/nimbit-platform/nx-cache/internal/web"
@@ -24,14 +25,16 @@ import (
 const pageSize = 25
 
 type Server struct {
-	Cfg      config.Config
-	Backend  storage.Backend
-	Store    store.Store
-	Cleaner  *cleanup.Cleaner
-	Sessions *auth.Sessions
-	Log      *slog.Logger
-	Static   fs.FS
-	logins   *loginGate
+	Cfg         config.Config
+	Backend     storage.Backend
+	Store       store.Store
+	Cleaner     *cleanup.Cleaner
+	Sessions    *auth.Sessions
+	Log         *slog.Logger
+	Static      fs.FS
+	Hub         *longpoll.Hub
+	PollTimeout time.Duration
+	logins      *loginGate
 }
 
 func (s *Server) Handler() http.Handler {
@@ -159,6 +162,21 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+func (s *Server) hub() *longpoll.Hub {
+	if s.Hub != nil {
+		return s.Hub
+	}
+	s.Hub = longpoll.NewHub()
+	return s.Hub
+}
+
+func (s *Server) pollTimeout() time.Duration {
+	if s.PollTimeout > 0 {
+		return s.PollTimeout
+	}
+	return 30 * time.Second
+}
+
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	data, err := s.dashboardData(r)
 	if err != nil {
@@ -166,10 +184,21 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	longpoll.SetCacheHeaders(w, s.hub().Snapshot())
 	s.render(w, r, http.StatusOK, web.DashboardPage(data))
 }
 
 func (s *Server) entries(w http.ResponseWriter, r *http.Request) {
+	modified, state, err := s.hub().WaitOrModified(r, s.pollTimeout())
+	if err != nil {
+		return
+	}
+	longpoll.SetCacheHeaders(w, state)
+	if !modified {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	data, err := s.dashboardData(r)
 	if err != nil {
 		s.logger().Error("dashboard entries", "err", err)
@@ -180,6 +209,16 @@ func (s *Server) entries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	modified, state, err := s.hub().WaitOrModified(r, s.pollTimeout())
+	if err != nil {
+		return
+	}
+	longpoll.SetCacheHeaders(w, state)
+	if !modified {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	data, err := s.dashboardData(r)
 	if err != nil {
 		s.logger().Error("dashboard stats", "err", err)
@@ -196,6 +235,7 @@ func (s *Server) cleanupNow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cleanup failed", http.StatusInternalServerError)
 		return
 	}
+	s.hub().Notify()
 	http.Redirect(w, r, "/?"+url.Values{"msg": {strconv.Itoa(n) + " expired artifacts removed"}}.Encode(), http.StatusSeeOther)
 }
 

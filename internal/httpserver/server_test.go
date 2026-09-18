@@ -10,12 +10,14 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nimbit-platform/nx-cache/internal/auth"
 	"github.com/nimbit-platform/nx-cache/internal/cleanup"
 	"github.com/nimbit-platform/nx-cache/internal/config"
+	"github.com/nimbit-platform/nx-cache/internal/longpoll"
 	"github.com/nimbit-platform/nx-cache/internal/nxartifact"
 	"github.com/nimbit-platform/nx-cache/internal/storage"
 	"github.com/nimbit-platform/nx-cache/internal/store"
@@ -24,7 +26,8 @@ import (
 func testServer(t *testing.T) (*Server, http.Handler, *storage.Memory, store.Store) {
 	t.Helper()
 	mem := storage.NewMemory()
-	catalog := store.NewObject(mem)
+	hub := longpoll.NewHub()
+	catalog := store.NewNotifying(store.NewObject(mem), hub)
 	cfg := config.Config{
 		AccessToken:    "write-token",
 		ReadToken:      "read-token",
@@ -45,6 +48,7 @@ func testServer(t *testing.T) (*Server, http.Handler, *storage.Memory, store.Sto
 			Secret:   []byte("session-secret"),
 			Username: "admin",
 		},
+		Hub: hub,
 	}
 	return s, s.Handler(), mem, catalog
 }
@@ -589,5 +593,386 @@ func TestDashboardShowsTaskFromNxTar(t *testing.T) {
 	got := rec.Body.String()
 	if !strings.Contains(got, "api:lint") || strings.Contains(got, "web:build") {
 		t.Fatalf("filter lint: %s", got)
+	}
+}
+
+func TestLongPollingColdRequestHeaders(t *testing.T) {
+	_, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	for _, endpoint := range []string{"/ui/stats", "/ui/entries"} {
+		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", endpoint, rec.Code)
+		}
+		if rec.Header().Get("Cache-Control") != "no-cache" {
+			t.Fatalf("%s: expected Cache-Control: no-cache, got %s", endpoint, rec.Header().Get("Cache-Control"))
+		}
+		if rec.Header().Get("ETag") == "" {
+			t.Fatalf("%s: expected non-empty ETag", endpoint)
+		}
+		if rec.Header().Get("Last-Modified") == "" {
+			t.Fatalf("%s: expected non-empty Last-Modified", endpoint)
+		}
+	}
+}
+
+func TestLongPollingStandingRequestResolvesOnUpload(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	// 1. Initial cold request to get ETag
+	req := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial stats: %d", rec.Code)
+	}
+	etag1 := rec.Header().Get("ETag")
+	if etag1 == "" {
+		t.Fatal("empty initial ETag")
+	}
+
+	// 2. Second request with matching ETag should block
+	standingDone := make(chan struct{})
+	standingRec := httptest.NewRecorder()
+	go func() {
+		standingReq := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+		standingReq.AddCookie(cookie)
+		standingReq.Header.Set("If-None-Match", etag1)
+		h.ServeHTTP(standingRec, standingReq)
+		close(standingDone)
+	}()
+
+	// Wait for the long poll to register as a standing subscriber
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.Hub.SubscriberCount() == 0 {
+		t.Fatal("expected standing subscriber to be registered")
+	}
+
+	// 3. Perform a cache upload to trigger notification
+	tarPayload, err := nxartifact.Pack("> nx run web:build\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRec := do(h, http.MethodPut, "/v1/cache/longpollhash1", "write-token", tarPayload, map[string]string{
+		"Content-Length": strconv.Itoa(len(tarPayload)),
+	})
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("put: %d %s", putRec.Code, putRec.Body.String())
+	}
+
+	// 4. Standing request should unblock immediately
+	select {
+	case <-standingDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("standing poll request did not resolve in time after cache upload")
+	}
+
+	if standingRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after update, got %d", standingRec.Code)
+	}
+	etag2 := standingRec.Header().Get("ETag")
+	if etag2 == etag1 {
+		t.Fatalf("expected new ETag after update, got identical %s", etag2)
+	}
+	if !strings.Contains(standingRec.Body.String(), "Artifacts") {
+		t.Fatalf("expected body with stats, got %s", standingRec.Body.String())
+	}
+}
+
+func TestLongPollingStandingRequestResolvesOnHitAndMiss(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	// Seed an artifact
+	tarPayload, err := nxartifact.Pack("> nx run app:build\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putRec := do(h, http.MethodPut, "/v1/cache/hashhit1", "write-token", tarPayload, map[string]string{
+		"Content-Length": strconv.Itoa(len(tarPayload)),
+	})
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("put: %d", putRec.Code)
+	}
+
+	// Get current ETag
+	req := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	etag := rec.Header().Get("ETag")
+
+	// 1. Standing poll unblocks on Hit
+	done := make(chan struct{})
+	standingRec := httptest.NewRecorder()
+	go func() {
+		pollReq := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+		pollReq.AddCookie(cookie)
+		pollReq.Header.Set("If-None-Match", etag)
+		h.ServeHTTP(standingRec, pollReq)
+		close(done)
+	}()
+
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Trigger cache hit
+	hitRec := do(h, http.MethodGet, "/v1/cache/hashhit1", "read-token", nil, nil)
+	if hitRec.Code != http.StatusOK {
+		t.Fatalf("get hit: %d", hitRec.Code)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("standing poll request did not resolve after cache hit")
+	}
+	if standingRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after hit, got %d", standingRec.Code)
+	}
+
+	etagAfterHit := standingRec.Header().Get("ETag")
+
+	// 2. Standing poll unblocks on Miss
+	doneMiss := make(chan struct{})
+	standingRecMiss := httptest.NewRecorder()
+	go func() {
+		pollReq := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+		pollReq.AddCookie(cookie)
+		pollReq.Header.Set("If-None-Match", etagAfterHit)
+		h.ServeHTTP(standingRecMiss, pollReq)
+		close(doneMiss)
+	}()
+
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Trigger cache miss
+	missRec := do(h, http.MethodGet, "/v1/cache/missinghashxyz", "read-token", nil, nil)
+	if missRec.Code != http.StatusNotFound {
+		t.Fatalf("get miss: %d", missRec.Code)
+	}
+
+	select {
+	case <-doneMiss:
+	case <-time.After(3 * time.Second):
+		t.Fatal("standing poll request did not resolve after cache miss")
+	}
+	if standingRecMiss.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after miss, got %d", standingRecMiss.Code)
+	}
+}
+
+func TestLongPollingTimeoutReturns304(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	s.PollTimeout = 50 * time.Millisecond
+	cookie := loginCookie(t, h)
+
+	// Initial cold request
+	req := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	etag := rec.Header().Get("ETag")
+
+	// Second request with same ETag times out to 304
+	req2 := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req2.AddCookie(cookie)
+	req2.Header.Set("If-None-Match", etag)
+	rec2 := httptest.NewRecorder()
+	start := time.Now()
+	h.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified, got %d", rec2.Code)
+	}
+	if rec2.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("expected Cache-Control: no-cache, got %s", rec2.Header().Get("Cache-Control"))
+	}
+	if rec2.Header().Get("ETag") != etag {
+		t.Fatalf("expected matching ETag on 304, got %s", rec2.Header().Get("ETag"))
+	}
+	if rec2.Body.Len() > 0 {
+		t.Fatalf("expected empty body on 304, got %q", rec2.Body.String())
+	}
+	if time.Since(start) < 40*time.Millisecond {
+		t.Fatalf("expected to wait for PollTimeout, elapsed %v", time.Since(start))
+	}
+}
+
+func TestLongPollingMultipleSubscribers(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	// Get initial ETag
+	req := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	etag := rec.Header().Get("ETag")
+
+	const numSubscribers = 5
+	var wg sync.WaitGroup
+	wg.Add(numSubscribers)
+	recorders := make([]*httptest.ResponseRecorder, numSubscribers)
+
+	for i := 0; i < numSubscribers; i++ {
+		recorders[i] = httptest.NewRecorder()
+		go func(idx int) {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+			r.AddCookie(cookie)
+			r.Header.Set("If-None-Match", etag)
+			h.ServeHTTP(recorders[idx], r)
+		}(i)
+	}
+
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() == numSubscribers {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s.Hub.SubscriberCount() != numSubscribers {
+		t.Fatalf("expected %d subscribers, got %d", numSubscribers, s.Hub.SubscriberCount())
+	}
+
+	// Trigger update
+	tarPayload, err := nxartifact.Pack("> nx run api:test\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do(h, http.MethodPut, "/v1/cache/multisubh1", "write-token", tarPayload, map[string]string{
+		"Content-Length": strconv.Itoa(len(tarPayload)),
+	})
+
+	wg.Wait()
+
+	for idx, r := range recorders {
+		if r.Code != http.StatusOK {
+			t.Errorf("subscriber %d got status %d", idx, r.Code)
+		}
+		if r.Header().Get("ETag") == etag {
+			t.Errorf("subscriber %d got old ETag", idx)
+		}
+	}
+}
+
+func TestLongPollingIfModifiedSince(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	// Initial request
+	req := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	lm := rec.Header().Get("Last-Modified")
+
+	done := make(chan struct{})
+	standingRec := httptest.NewRecorder()
+	go func() {
+		pollReq := httptest.NewRequest(http.MethodGet, "/ui/stats", nil)
+		pollReq.AddCookie(cookie)
+		pollReq.Header.Set("If-Modified-Since", lm)
+		h.ServeHTTP(standingRec, pollReq)
+		close(done)
+	}()
+
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Trigger cleanup to notify
+	cleanRec := httptest.NewRequest(http.MethodPost, "/ui/cleanup", nil)
+	cleanRec.AddCookie(cookie)
+	cleanResp := httptest.NewRecorder()
+	h.ServeHTTP(cleanResp, cleanRec)
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("standing poll request with IMS did not resolve after cleanup")
+	}
+	if standingRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after cleanup, got %d", standingRec.Code)
+	}
+}
+
+func TestLongPollingEntriesEndpoint(t *testing.T) {
+	s, h, _, _ := testServer(t)
+	cookie := loginCookie(t, h)
+
+	// 1. Initial cold request to /ui/entries
+	req := httptest.NewRequest(http.MethodGet, "/ui/entries", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial entries: %d", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+
+	// 2. Second request with matching ETag blocks
+	done := make(chan struct{})
+	standingRec := httptest.NewRecorder()
+	go func() {
+		standingReq := httptest.NewRequest(http.MethodGet, "/ui/entries", nil)
+		standingReq.AddCookie(cookie)
+		standingReq.Header.Set("If-None-Match", etag)
+		h.ServeHTTP(standingRec, standingReq)
+		close(done)
+	}()
+
+	for i := 0; i < 50; i++ {
+		if s.Hub.SubscriberCount() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// 3. Upload new entry
+	tarPayload, err := nxartifact.Pack("> nx run web:lint\n", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	do(h, http.MethodPut, "/v1/cache/entriesh1", "write-token", tarPayload, map[string]string{
+		"Content-Length": strconv.Itoa(len(tarPayload)),
+	})
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("standing poll on /ui/entries did not resolve after upload")
+	}
+
+	if standingRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /ui/entries, got %d", standingRec.Code)
+	}
+	if !strings.Contains(standingRec.Body.String(), "entriesh1") {
+		t.Fatalf("expected body to contain uploaded hash, got %s", standingRec.Body.String())
 	}
 }
