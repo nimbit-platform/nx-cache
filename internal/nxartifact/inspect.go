@@ -27,6 +27,7 @@ var (
 	ansiRe     = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	nxRunRe    = regexp.MustCompile(`(?i)(?:^|\n)\s*>\s*nx(?:\.exe)?\s+run\s+(\S+)`)
 	nxTargetRe = regexp.MustCompile(`(?i)(?:running|ran|successfully ran)\s+target\s+(\S+)\s+for project\s+(\S+)`)
+	commandRe  = regexp.MustCompile(`(?m)^\s*>\s+(.+?)\s*$`)
 )
 
 // Inspect reads an Nx remote-cache payload (gzip tar, as produced by HttpRemoteCache)
@@ -113,11 +114,10 @@ func Merge(primary, fallback store.TaskInfo) store.TaskInfo {
 	}
 	if primary.Kind != "" {
 		out.Kind = primary.Kind
+	} else if fallback.Kind != "" {
+		out.Kind = fallback.Kind
 	} else {
 		out.Kind = KindFromTarget(out.Target)
-		if out.Kind == "" {
-			out.Kind = fallback.Kind
-		}
 	}
 	return out
 }
@@ -224,6 +224,16 @@ func finalize(info store.TaskInfo, terminal string, paths []string) store.TaskIn
 		if info.Target == "" {
 			info.Target = t
 		}
+	} else if command, ok := parseCommand(text); ok {
+		if info.Target == "" {
+			info.Target = command
+		}
+		if info.Kind == "" {
+			info.Kind = commandKind(command)
+		}
+	}
+	if info.Project == "" {
+		info.Project = projectFromPaths(paths)
 	}
 	if info.Kind == "" {
 		info.Kind = KindFromTarget(info.Target)
@@ -232,6 +242,73 @@ func finalize(info store.TaskInfo, terminal string, paths []string) store.TaskIn
 		info.Kind = KindFromPaths(paths)
 	}
 	return info
+}
+
+func parseCommand(text string) (string, bool) {
+	matches := commandRe.FindAllStringSubmatch(text, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		fields := strings.Fields(matches[i][1])
+		if len(fields) == 0 {
+			continue
+		}
+		for len(fields) > 0 && strings.HasPrefix(fields[0], "-") {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "pnpm":
+			fields = fields[1:]
+			if len(fields) > 0 && (fields[0] == "exec" || fields[0] == "run") {
+				fields = fields[1:]
+			}
+		case "npm":
+			fields = fields[1:]
+			if len(fields) > 0 && (fields[0] == "exec" || fields[0] == "run") {
+				fields = fields[1:]
+			}
+		case "npx", "bunx", "yarn":
+			fields = fields[1:]
+		default:
+			continue
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		end := len(fields)
+		for j, field := range fields {
+			if strings.HasPrefix(field, "-") {
+				end = j
+				break
+			}
+		}
+		if end == 0 {
+			continue
+		}
+		return strings.Join(fields[:end], " "), true
+	}
+	return "", false
+}
+
+func projectFromPaths(paths []string) string {
+	for _, name := range paths {
+		parts := strings.Split(name, "/")
+		if len(parts) >= 2 && (parts[0] == "apps" || parts[0] == "libs") {
+			return parts[1]
+		}
+	}
+	return ""
+}
+
+func commandKind(command string) string {
+	kind := KindFromTarget(command)
+	switch kind {
+	case "build", "test", "lint", "e2e", "typecheck":
+		return kind
+	default:
+		return ""
+	}
 }
 
 func parseNxRun(text string) (project, target, config string, ok bool) {

@@ -59,6 +59,22 @@ func TestInspectRunningTargetLineAndTestPaths(t *testing.T) {
 	}
 }
 
+func TestInspectCommandOutput(t *testing.T) {
+	payload, err := Pack("\x1b[2m> \x1b[22mpnpm exec rspack build --config apps/ocb/rspack.config.js --mode development\n", 0, map[string][]byte{
+		"apps/ocb/dist/main.js": []byte("bundle"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := Inspect(bytes.NewReader(payload))
+	if info.Project != "ocb" || info.Target != "rspack build" || info.Kind != "build" {
+		t.Fatalf("%+v", info)
+	}
+	if got := Merge(FromHeaders(http.Header{}), info); got.Kind != "build" {
+		t.Fatalf("merge lost command kind: %+v", got)
+	}
+}
+
 func TestInspectCapsTarBomb(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
